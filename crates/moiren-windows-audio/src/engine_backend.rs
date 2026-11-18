@@ -1538,6 +1538,7 @@ fn observation(
         engine_blocks: 0,
         engine_busy_100ns: 0,
         engine_peak_block_100ns: 0,
+        engine_over_budget: 0,
         driver_latency: None,
         absent: false,
     }
@@ -1576,6 +1577,7 @@ fn absent_observation(
         engine_blocks: 0,
         engine_busy_100ns: 0,
         engine_peak_block_100ns: 0,
+        engine_over_budget: 0,
         driver_latency: None,
         absent: true,
     }
@@ -1749,6 +1751,7 @@ fn prepare_process<S: ProcessingSample>(
             engine_blocks: 0,
             engine_busy_100ns: 0,
             engine_peak_block_100ns: 0,
+            engine_over_budget: 0,
             driver_latency: None,
             absent: false,
         },

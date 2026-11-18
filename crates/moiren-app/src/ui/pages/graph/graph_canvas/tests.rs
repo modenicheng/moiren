@@ -1062,21 +1062,266 @@ fn recorder_strip_lays_out_status_line_name_and_transport_slots() {
     });
     let layout = NodeLayout::new(&recorder);
     let strip = layout.recording.as_ref().expect("recorder card strip");
-    // The status line leads with the dot, the duration text closes the same
-    // line, and the file name takes the row below.
-    assert!(strip.status.bounds.origin.x > strip.dot.origin.x);
-    assert!(strip.duration.bounds.origin.x > strip.status.bounds.origin.x);
-    assert!(
-        strip.duration.bounds.origin.y < strip.file_name.bounds.origin.y,
-        "the file name sits under the status line"
+    let left = 32. + theme::card::RAIL_W + theme::card::PADDING;
+    let inner = theme::NODE_WIDTH - theme::card::RAIL_W - 2. * theme::card::PADDING;
+    let body_top = 80. + theme::card::BODY_TOP;
+    // The status line leads with the dot; the phase word and the live clock
+    // share it.
+    assert_eq!(
+        strip.dot.origin,
+        point(left, body_top + 4.),
+        "the dot hangs on the status line"
     );
-    // Three side-by-side transport slots, one stride apart.
-    let stride = theme::card::REC_BTN + 6.;
+    assert_eq!(
+        strip.dot.size,
+        size(theme::card::REC_DOT, theme::card::REC_DOT)
+    );
+    assert_eq!(
+        strip.status.bounds.origin,
+        point(left + 16., body_top + 2.),
+        "the phase word follows the dot"
+    );
+    assert_close(strip.status.font_size, theme::card::REC_STATUS_SIZE);
+    assert_eq!(
+        strip.duration.bounds.origin,
+        point(left + 112., body_top),
+        "the clock closes the status line"
+    );
+    assert_close(strip.duration.font_size, theme::card::REC_CLOCK_SIZE);
+    assert_close(
+        strip.duration.bounds.origin.x + strip.duration.bounds.size.width,
+        left + inner,
+    );
+    // The file name takes its own row below, full width.
+    assert_eq!(
+        strip.file_name.bounds.origin,
+        point(left, body_top + theme::card::REC_ROW_FILE)
+    );
+    assert_close(strip.file_name.font_size, theme::card::REC_FILE_SIZE);
+    assert_close(strip.file_name.bounds.size.width, inner);
+    // Three side-by-side transport slots, one stride apart, inset in their
+    // bar container on the transport row.
+    let stride = theme::card::REC_BTN + theme::card::REC_BTN_GAP;
+    assert_eq!(
+        strip.record.origin,
+        point(
+            left + theme::card::REC_BAR_INSET,
+            body_top + theme::card::REC_ROW_TRANSPORT + theme::card::REC_BAR_INSET,
+        ),
+        "the record slot opens the transport bar"
+    );
     assert_close(strip.pause.origin.x - strip.record.origin.x, stride);
     assert_close(strip.stop.origin.x - strip.pause.origin.x, stride);
+    for slot in [strip.record, strip.pause, strip.stop] {
+        assert_eq!(slot.size, size(theme::card::REC_BTN, theme::card::REC_BTN));
+    }
+    // The bar container wraps the slots: the record slot sits exactly one
+    // bar inset inside the container's top-left corner and the stop slot
+    // one inset inside its bottom-right corner, so the container's stroke
+    // ring never crosses a slot's fill.
+    let inset = theme::card::REC_BAR_INSET;
     assert_eq!(
-        strip.record.size,
-        size(theme::card::REC_BTN, theme::card::REC_BTN)
+        strip.bar.origin,
+        point(strip.record.origin.x - inset, strip.record.origin.y - inset),
+        "the container opens one inset before the record slot"
+    );
+    assert_eq!(
+        strip.bar.size,
+        size(theme::card::REC_TRANSPORT_W, theme::card::REC_TRANSPORT_H)
+    );
+    for slot in [strip.record, strip.pause, strip.stop] {
+        assert_eq!(
+            slot.origin.y,
+            strip.bar.origin.y + inset,
+            "every slot clears the container's top stroke"
+        );
+    }
+    assert_eq!(
+        strip.stop.origin.x + strip.stop.size.width + inset,
+        strip.bar.origin.x + strip.bar.size.width,
+        "the container closes one inset after the stop slot"
+    );
+    assert_eq!(
+        strip.record.size.height + 2. * inset,
+        strip.bar.size.height,
+        "the container's stroke ring stays outside every slot fill"
+    );
+    assert!(
+        inset >= theme::HAIRLINE_W,
+        "the hairline stroke paints inside the container bounds, so the slot inset must keep it off the slot fills"
+    );
+}
+
+/// The transport bar keeps its shape in every phase: the container and the
+/// three slot rects always exist at the same offsets, so no phase can
+/// collapse or move the row.
+#[test]
+fn transport_slots_hold_their_geometry_in_every_phase() {
+    use crate::service::RecordingPhase;
+
+    let strip_for = |phase| {
+        let mut recorder = node("rec", "Recorder", "48kHz L/R").at(32., 80.);
+        recorder.recording = Some(super::CardRecording {
+            phase,
+            file_name: String::new(),
+        });
+        let layout = NodeLayout::new(&recorder);
+        layout.recording.expect("recorder card strip").clone()
+    };
+    let idle = strip_for(None);
+    for phase in [
+        Some(RecordingPhase::Recording),
+        Some(RecordingPhase::Paused),
+        Some(RecordingPhase::Rebinding),
+        Some(RecordingPhase::Stopping),
+        Some(RecordingPhase::Finished),
+        Some(RecordingPhase::Failed),
+    ] {
+        let strip = strip_for(phase);
+        assert_eq!(strip.bar, idle.bar);
+        assert_eq!(strip.record, idle.record);
+        assert_eq!(strip.pause, idle.pause);
+        assert_eq!(strip.stop, idle.stop);
+    }
+}
+
+/// Every transport slot paints as a real button in every phase: the record
+/// key stays a red solid for the session's whole life, an unavailable pause
+/// or stop dims to a raised face with a muted glyph, and no slot ever
+/// renders the hollow outline the old ghost design drew.
+#[test]
+fn transport_slots_paint_as_real_buttons_in_every_phase() {
+    use super::RecordAction;
+    use crate::service::RecordingPhase;
+    use crate::ui::pages::graph::graph_canvas_view::transport_look;
+
+    let phases = [
+        None,
+        Some(RecordingPhase::Recording),
+        Some(RecordingPhase::Paused),
+        Some(RecordingPhase::Rebinding),
+        Some(RecordingPhase::Stopping),
+        Some(RecordingPhase::Finished),
+        Some(RecordingPhase::Failed),
+    ];
+
+    // The record key is the strip's one loud element: red wash under a red
+    // glyph, in every phase — the button never disappears while a session
+    // runs, and the card's state dot carries the blink instead.
+    for phase in phases {
+        let look = transport_look(RecordAction::Record, phase);
+        assert_eq!(
+            look.background,
+            theme::DANGER_WASH,
+            "record face for {phase:?}"
+        );
+        assert_eq!(
+            look.glyph_color,
+            theme::DANGER,
+            "record glyph for {phase:?}"
+        );
+        assert_eq!(look.glyph, "player-record", "record glyph for {phase:?}");
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the record key must never paint hollow, for {phase:?}"
+        );
+    }
+
+    // The pause slot: ⏸ while running, ▶ while held, and its own ⏸ glyph
+    // dimmed wherever the phase takes the affordance away — still a solid
+    // raised face either way.
+    for phase in phases {
+        let look = transport_look(RecordAction::Pause, phase);
+        let expected_glyph = match phase {
+            Some(RecordingPhase::Paused) => "player-play",
+            _ => "player-pause",
+        };
+        assert_eq!(look.glyph, expected_glyph, "pause glyph for {phase:?}");
+        assert_eq!(
+            look.background,
+            theme::controls::RAISED,
+            "pause face for {phase:?}"
+        );
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the pause slot must never paint hollow, for {phase:?}"
+        );
+        let enabled = RecordAction::Pause.available(phase).is_some();
+        assert_eq!(
+            look.glyph_color,
+            if enabled {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
+            "pause glyph strength for {phase:?}"
+        );
+    }
+
+    // The stop slot: full strength while a session is live, dimmed
+    // otherwise, on the same solid raised face.
+    for phase in phases {
+        let look = transport_look(RecordAction::Stop, phase);
+        assert_eq!(look.glyph, "player-stop", "stop glyph for {phase:?}");
+        assert_eq!(
+            look.background,
+            theme::controls::RAISED,
+            "stop face for {phase:?}"
+        );
+        assert_ne!(
+            look.background,
+            theme::controls::TRANSPARENT,
+            "the stop slot must never paint hollow, for {phase:?}"
+        );
+        let enabled = RecordAction::Stop.available(phase).is_some();
+        assert_eq!(
+            look.glyph_color,
+            if enabled {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            },
+            "stop glyph strength for {phase:?}"
+        );
+    }
+}
+
+/// The file row shows the session's output name while one is set; an idle
+/// card that never recorded falls back to the node's static detail, and a
+/// running session before its name is published paints nothing.
+#[test]
+fn recorder_strip_file_row_names_the_file_or_falls_back_to_detail() {
+    use crate::service::RecordingPhase;
+    use crate::ui::pages::graph::graph_canvas_view::strip_file_label;
+
+    let detail = "48000 frame buffer";
+    let idle = super::CardRecording {
+        phase: None,
+        file_name: String::new(),
+    };
+    assert_eq!(
+        strip_file_label(&idle, detail),
+        Some((detail, theme::TEXT_FAINT)),
+        "idle metadata is recovered onto the file row"
+    );
+    let named = super::CardRecording {
+        phase: Some(RecordingPhase::Recording),
+        file_name: "moiren-rec.wav".into(),
+    };
+    assert_eq!(
+        strip_file_label(&named, detail),
+        Some(("moiren-rec.wav", theme::TEXT_MUTED))
+    );
+    let unnamed = super::CardRecording {
+        phase: Some(RecordingPhase::Recording),
+        file_name: String::new(),
+    };
+    assert_eq!(
+        strip_file_label(&unnamed, detail),
+        None,
+        "a live session paints no fallback metadata"
     );
 }
 

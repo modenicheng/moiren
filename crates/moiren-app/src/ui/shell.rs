@@ -72,6 +72,13 @@ impl Drop for OwnedService {
 }
 
 pub fn run() -> anyhow::Result<()> {
+    // The gpui event loop runs on this thread for the whole process lifetime:
+    // its registry row stays for the duration via the held guard.
+    let ui_main = moiren_engine::threads::register_thread(
+        "moiren-ui-main",
+        moiren_engine::threads::ThreadClass::Ui,
+    );
+    ui_main.enter();
     let service =
         start_service().map_err(|e| anyhow::anyhow!("starting application service: {e:?}"))?;
     let handle = service.handle();
@@ -417,6 +424,7 @@ impl StudioShell {
                 status_wait: None,
                 status_timer: None,
                 status_window_hovered: false,
+                frames: Default::default(),
                 perf: Default::default(),
                 perf_task: None,
             },
@@ -895,6 +903,7 @@ impl StudioShell {
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.chrome.frames.shell_renders += 1;
         #[cfg(feature = "gpui-test")]
         {
             self.trace.borrow_mut().shell_renders += 1;

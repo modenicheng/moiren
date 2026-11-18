@@ -249,9 +249,16 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
         let mut clock = self.clock.take().expect("prepared virtual clock");
         let recovery_cap_periods = self.recovery_cap_periods;
         let mut clock_trace = ClockTrace::default();
+        // Registry row created on this control thread; the worker's only
+        // registry action is the `enter` below (see `moiren_engine::threads`).
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-virtual-owner",
+            moiren_engine::threads::ThreadClass::Rt,
+        );
         let worker = thread::Builder::new()
             .name("moiren-virtual-owner".into())
             .spawn(move || {
+                thread_guard.enter();
                 // Match the physical paths' scheduling class: this thread
                 // paces Engine renders against audio deadlines. Registration
                 // failure is non-fatal.

@@ -17,20 +17,27 @@ use crate::{
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
 
 /// Persisted configuration of one plugin node: what to load, the parameter
-/// table the scan collected by probing an instance, and an optional state
-/// chunk to restore before the first block.
+/// table the scan collected by probing an instance, and an optional preset
+/// to restore before the first block — either a captured state chunk or a
+/// factory preset index into the scan-reported preset list. At most one
+/// form is set; the app layer validates the exclusivity, and the engine
+/// applies whichever is present.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginSettings {
     pub descriptor: moiren_plugins::spec::PluginDescriptor,
     /// Parameter snapshot from the scanning probe; the engine's automation
     /// table is derived from it, so it must match what a fresh instance
-    /// reports (the probe guarantees that at scan time).
+    /// reports (the probe guarantees that at scan time). A preset restore
+    /// may move the live values off this table; the processor reads the
+    /// instance's own table after the restore for exactly that reason.
     pub parameters: Vec<moiren_plugins::spec::PluginParameterSpec>,
     /// State chunk captured earlier from the same plugin; applied control
-    /// side right after instantiation. The app-side picker only assigns
-    /// plugins today, so this rides persisted projects until preset
-    /// capture/selection UI exists.
+    /// side right after instantiation. Restored projects carry these.
     pub preset: Option<Vec<u8>>,
+    /// Factory preset, by its index into the scan-reported preset list
+    /// (VST2 programs today); applied control side right after
+    /// instantiation, after any state chunk.
+    pub preset_program: Option<u32>,
 }
 
 impl PluginSettings {
@@ -105,8 +112,14 @@ impl<S: ProcessingSample> PluginProcessor<S> {
             sample_rate,
             max_block_frames.max(1) as u32,
         )?;
+        // Both preset forms restore control side, before the automation
+        // table is read off the instance, so `parameters` below reflects the
+        // restored state rather than the scanned probe.
         if let Some(preset) = &settings.preset {
             instance.load_state(preset)?;
+        }
+        if let Some(program) = settings.preset_program {
+            instance.select_preset(program)?;
         }
         let channels = instance.descriptor().channels() as usize;
         let capacity = max_block_frames.max(1);

@@ -329,6 +329,59 @@ impl LogicalGraph {
             .map(|_| ())
     }
 
+    /// Resize a width-mirroring node: every kind whose ports all carry the
+    /// node's width, which is everything except Rack streams and the
+    /// ChannelMapper's independent input boundary (both rejected as
+    /// [`GraphError::FixedPortLayout`]). Ports resize in place, so their
+    /// identities — and every compatible edge — survive untouched.
+    ///
+    /// An incident edge whose far side does not carry the new width would
+    /// violate the equal-width edge contract (`connect` enforces it and
+    /// [`Self::validate`] rechecks it), so the whole resize is rejected with
+    /// [`GraphError::StrandedEdges`] and the caller disconnects those routes
+    /// first. Nothing is partially applied: a rejected resize leaves the
+    /// graph exactly as it was.
+    pub fn set_node_channels(
+        &mut self,
+        node_id: NodeId,
+        channels: usize,
+    ) -> Result<(), GraphError> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|n| n.id == node_id)
+            .ok_or(GraphError::NodeNotFound)?;
+        {
+            let node = &self.nodes[index];
+            if matches!(node.kind, NodeKind::Rack | NodeKind::ChannelMapper) {
+                return Err(GraphError::FixedPortLayout);
+            }
+            node.kind.validate_channels(channels)?;
+            let stranded = self.edges.iter().any(|edge| {
+                // The node owns exactly one endpoint of an incident edge;
+                // the other endpoint's width must already match the new one.
+                let far_port = if node.inputs.iter().any(|p| p.id == edge.dst_port) {
+                    edge.src_port
+                } else if node.outputs.iter().any(|p| p.id == edge.src_port) {
+                    edge.dst_port
+                } else {
+                    return false;
+                };
+                self.get_port(far_port)
+                    .is_ok_and(|far| far.channels() != channels)
+            });
+            if stranded {
+                return Err(GraphError::StrandedEdges);
+            }
+        }
+        let node = &mut self.nodes[index];
+        node.channels = channels;
+        for port in node.inputs.iter_mut().chain(&mut node.outputs) {
+            port.channels = channels;
+        }
+        Ok(())
+    }
+
     /// Connect existing ports only. Gain is linear; no implicit conversion or
     /// mixing is performed. Send parameters remain compiler input metadata.
     pub fn connect(

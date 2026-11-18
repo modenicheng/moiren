@@ -200,6 +200,22 @@ pub(crate) fn buffer_text(frames: u32, sample_rate: u32) -> String {
     .to_string()
 }
 
+/// One buffer period as the inspector spells it: whole seconds as the
+/// primary reading, then the exact frames-and-milliseconds form the bar
+/// uses (`buffer_text`).
+pub(crate) fn buffer_summary_text(frames: u32, sample_rate: u32) -> String {
+    if frames == 0 || sample_rate == 0 {
+        return "—".into();
+    }
+    let secs = frames / sample_rate;
+    t!(
+        "%{secs} s · %{detail}",
+        secs = secs,
+        detail = buffer_text(frames, sample_rate)
+    )
+    .to_string()
+}
+
 /// The bar's compact rate line: rate plus whatever depth is known — the
 /// measured device format while running, the configured engine precision
 /// otherwise.
@@ -1060,6 +1076,26 @@ mod tests {
         assert_eq!(super::buffer_text(512, 48_000), "512 smp / 10.7 ms");
         assert_eq!(super::buffer_text(0, 48_000), "—", "no invented period");
         assert_eq!(super::buffer_text(256, 0), "—");
+    }
+
+    /// The inspector's buffer value leads with whole seconds and closes with
+    /// the bar's exact reading.
+    #[test]
+    fn buffer_summary_text_leads_with_whole_seconds() {
+        assert_eq!(
+            super::buffer_summary_text(96_000, 48_000),
+            "2 s · 96000 smp / 2000.0 ms"
+        );
+        assert_eq!(
+            super::buffer_summary_text(256, 48_000),
+            "0 s · 256 smp / 5.3 ms"
+        );
+        assert_eq!(
+            super::buffer_summary_text(0, 48_000),
+            "—",
+            "no invented period"
+        );
+        assert_eq!(super::buffer_summary_text(256, 0), "—");
     }
 
     #[test]

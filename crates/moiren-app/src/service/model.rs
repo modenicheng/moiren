@@ -119,8 +119,12 @@ pub enum AppRequest {
     Start(SessionSpec),
     RefreshCatalog,
     /// Scan plugin directories in the sandboxed scanner subprocesses and
-    /// replace the published plugin library.
-    ScanPlugins,
+    /// replace the published plugin library. Unchanged scan roots are served
+    /// from the on-disk cache unless `force` bypasses it (the picker's
+    /// forced-rescan row).
+    ScanPlugins {
+        force: bool,
+    },
     SetGainPan {
         gain: f64,
         pan: f64,

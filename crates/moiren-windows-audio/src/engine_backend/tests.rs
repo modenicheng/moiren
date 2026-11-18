@@ -2395,3 +2395,14 @@ fn a_generic_runtime_failure_keeps_the_reopen_contract() {
         "no absence watch was registered for a generic failure"
     );
 }
+
+#[test]
+fn the_over_budget_window_compares_the_worst_block_with_its_audio_time() {
+    // 256 frames at 48 kHz is 53 333.33.. 100 ns ticks; integer division
+    // floors to 53 333, and one tick above that is over budget while the
+    // floor itself is exactly on schedule.
+    assert!(!owner::window_over_budget(53_333, 256, 48_000));
+    assert!(owner::window_over_budget(53_334, 256, 48_000));
+    // A zero peak (the render clock was missing) is unmeasured, not overdue.
+    assert!(!owner::window_over_budget(0, 256, 48_000));
+}

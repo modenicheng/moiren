@@ -59,6 +59,7 @@ fn fixture_settings() -> &'static PluginSettings {
             descriptor,
             parameters: probe.parameters().to_vec(),
             preset: None,
+            preset_program: None,
         }
     })
 }

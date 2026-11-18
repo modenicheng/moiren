@@ -1616,21 +1616,42 @@ _version: 2
 "Performance":
   en: Performance
   zh-CN: 性能监控
-"By process, refreshed every second":
-  en: By process, refreshed every second
-  zh-CN: 按进程，每 1 秒刷新
-"Process":
-  en: Process
-  zh-CN: 进程
-"CPU":
-  en: CPU
-  zh-CN: CPU
-"Memory":
-  en: Memory
-  zh-CN: 内存
+"Moiren's own threads, refreshed every second":
+  en: Moiren's own threads, refreshed every second
+  zh-CN: Moiren 自身线程，每 1 秒刷新
 "Sampling…":
   en: Sampling…
   zh-CN: 采样中…
+"Thread CPU sampling is Windows-only":
+  en: Thread CPU sampling is Windows-only
+  zh-CN: 线程 CPU 采样仅 Windows 支持
+"Realtime threads":
+  en: Realtime threads
+  zh-CN: 实时线程
+"Control threads":
+  en: Control threads
+  zh-CN: 控制线程
+"User interface":
+  en: User interface
+  zh-CN: 界面
+"Plugin host":
+  en: Plugin host
+  zh-CN: 插件宿主
+"No plugin host thread":
+  en: No plugin host thread
+  zh-CN: 暂无插件宿主线程
+"Other threads":
+  en: Other threads
+  zh-CN: 其他线程
+"%{count} unnamed":
+  en: "%{count} unnamed"
+  zh-CN: "%{count} 个未命名"
+"Includes the driver-owned ASIO callback thread":
+  en: Includes the driver-owned ASIO callback thread
+  zh-CN: 含驱动持有的 ASIO 回调线程
+"Moiren threads":
+  en: Moiren threads
+  zh-CN: Moiren 线程
 "Total CPU / last 60 s":
   en: Total CPU / last 60 s
   zh-CN: 总 CPU / 近 60 秒
@@ -1694,6 +1715,18 @@ _version: 2
 "Dropped frames":
   en: Dropped frames
   zh-CN: 丢弃帧数
+"SESSION":
+  en: SESSION
+  zh-CN: 会话
+"OUTPUT":
+  en: OUTPUT
+  zh-CN: 输出
+"BUFFER":
+  en: BUFFER
+  zh-CN: 缓冲
+"%{secs} s · %{detail}":
+  en: "%{secs} s · %{detail}"
+  zh-CN: "%{secs} 秒 · %{detail}"
 "Start recording":
   en: Start recording
   zh-CN: 开始录制
@@ -2525,6 +2558,9 @@ _version: 2
 "Scan plugin folders":
   en: Scan plugin folders
   zh-CN: 扫描插件文件夹
+"Force full rescan":
+  en: Force full rescan
+  zh-CN: 强制完整重扫
 "Not assigned · choose a plugin":
   en: Not assigned · choose a plugin
   zh-CN: 未指派 · 请选择插件
@@ -2534,3 +2570,18 @@ _version: 2
 "%{count} plugin(s), %{failed} excluded by failed scans":
   en: "%{count} plugin(s), %{failed} excluded by failed scans"
   zh-CN: "%{count} 个插件，%{failed} 个因扫描失败被排除"
+"Preset":
+  en: Preset
+  zh-CN: 预设
+"Factory default":
+  en: Factory default
+  zh-CN: 出厂默认
+"Saved state":
+  en: Saved state
+  zh-CN: 已保存状态
+"Discard saved state":
+  en: Discard saved state
+  zh-CN: 丢弃已保存状态
+"Program %{index}":
+  en: "Program %{index}"
+  zh-CN: "程序 %{index}"

@@ -12,7 +12,7 @@ use crate::ui::pages;
 use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld};
 use crate::ui::shell::test_harness::{
     finish_service, initial_projection, settle_panels, shell_with_state, spawn_service, test_shell,
-    wait_for, wait_until,
+    test_shell_with, wait_for, wait_until,
 };
 use crate::ui::shell::{Camera, StudioShell};
 
@@ -797,6 +797,21 @@ fn recorder_library_spawn_paints_strip_and_inspector_without_panicking(
         assert!(window.find("recorder-format-wav").visible());
         assert!(window.find("recorder-format-mp3").visible());
         assert!(window.find("recorder-directory").visible());
+        // The redesign's section skeleton: the transport mirror rides right
+        // under the status header, then the SESSION, OUTPUT, and BUFFER
+        // group headers stack in order.
+        let status = window.find("recorder-status").bounds();
+        let transport = window.find("recorder-transport").bounds();
+        let session = window.find("recorder-group-session").bounds();
+        let output = window.find("recorder-group-output").bounds();
+        let buffer = window.find("recorder-group-buffer").bounds();
+        assert!(
+            transport.origin.y > status.origin.y,
+            "the quick transport follows the status header"
+        );
+        assert!(session.origin.y > transport.origin.y);
+        assert!(output.origin.y > session.origin.y);
+        assert!(buffer.origin.y > output.origin.y);
     });
     // Switching the format preference must repaint the selector, persist, and
     // mount the encoding knobs: bitrate ladder for CBR, quality for VBR.
@@ -863,6 +878,74 @@ fn recorder_library_spawn_paints_strip_and_inspector_without_panicking(
     });
     render(cx);
     finish_service(runtime);
+}
+
+/// The failed session's diagnostic renders in its wash container: padded
+/// past the bare text line, between the status header and the SESSION group.
+/// The core driver's fallback start records a graph fault rather than a
+/// session entry, so the failed entry is crafted directly.
+#[gpui_kit::test]
+fn failed_recorder_session_wraps_the_diagnostic_in_its_wash_container(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1200.))));
+    let id = add_node(&view, cx, NodeKind::Recorder);
+    view.update(cx, |shell, cx| {
+        shell.selection.nodes.clear();
+        shell.selection.node = Some(id);
+        cx.notify();
+    });
+    render(cx);
+    finish_service(runtime);
+    // The crafted failure: a raw diagnostic, three dropped frames, no file.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let snapshot = Arc::make_mut(&mut state.snapshot);
+            snapshot.recordings.push(crate::service::RecordingSnapshot {
+                node: id,
+                phase: crate::service::RecordingPhase::Failed,
+                file_name: String::new(),
+                path: std::path::PathBuf::new(),
+                sample_rate: 0,
+                recorded_secs: 0,
+                dropped_frames: 3,
+                error: Some("audio engine is not running".into()),
+            });
+        });
+        cx.notify();
+    });
+    render(cx);
+    cx.update(|window, _| {
+        let error = window.find("recorder-error");
+        assert!(
+            error.visible(),
+            "the failed session surfaces its diagnostic"
+        );
+        let padded = px(crate::ui::theme::TEXT_SM) + px(2. * crate::ui::theme::SPACE_2);
+        assert!(
+            error.bounds().size.height >= padded,
+            "the diagnostic sits in its padded container: {:?}",
+            error.bounds()
+        );
+        let status = window.find("recorder-status").bounds();
+        let transport = window.find("recorder-transport").bounds();
+        let session = window.find("recorder-group-session").bounds();
+        assert!(
+            error.bounds().origin.y > status.origin.y,
+            "the error block follows the status header"
+        );
+        assert!(
+            error.bounds().origin.y < transport.origin.y,
+            "the error block precedes the quick transport"
+        );
+        assert!(
+            error.bounds().origin.y < session.origin.y,
+            "the error block precedes the SESSION group"
+        );
+    });
 }
 
 #[gpui_kit::test]
@@ -4495,5 +4578,175 @@ fn graph_panel_rebuilds_on_a_catalog_only_republish(cx: &mut gpui_kit::TestAppCo
         before + 1,
         "a notification without a publish must replay the cached page"
     );
+    finish_service(runtime);
+}
+
+/// A seeded plugin-library fixture for the inspector suites: one stereo
+/// plugin with two factory presets, under a stable id both the picker rows
+/// and the assignment key share.
+fn preset_library_fixture_at(channels: u32) -> (crate::service::PluginLibrary, String) {
+    use moiren_plugins::spec::{PluginDescriptor, PluginFormat, PluginParameterSpec};
+    let descriptor = PluginDescriptor {
+        format: PluginFormat::Clap,
+        path: "/plugins/preset-fixture.clap".into(),
+        id: "org.moiren.preset".into(),
+        name: "Preset Fixture".into(),
+        vendor: "Moiren".into(),
+        version: "1.0".into(),
+        input_channels: channels,
+        output_channels: channels,
+        is_synth: false,
+        has_editor: false,
+    };
+    let key = descriptor.stable_id();
+    (
+        crate::service::PluginLibrary::from_sandbox_report(
+            moiren_plugins::sandbox::SandboxReport {
+                descriptors: vec![moiren_plugins::sandbox::SandboxDescriptor {
+                    descriptor,
+                    parameters: vec![PluginParameterSpec {
+                        id: 0,
+                        name: "Gain".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.25,
+                        automatable: true,
+                        stepped: false,
+                    }],
+                    latency_frames: 0,
+                    presets: vec!["Flat".into(), "Loud".into()],
+                }],
+                failures: Vec::new(),
+            },
+        ),
+        key,
+    )
+}
+
+/// Convenience wrapper matching the preset picker's stereo fixture.
+fn preset_library_fixture() -> (crate::service::PluginLibrary, String) {
+    preset_library_fixture_at(2)
+}
+
+/// The preset picker's full loop over a real service: the seeded library's
+/// factory presets render as inspector rows, a click persists the selection
+/// through the BindPlugin chain, and Factory default clears it again.
+#[gpui_kit::test]
+fn plugin_inspector_preset_picker_selects_and_persists(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (library, key) = preset_library_fixture();
+    let mut context = crate::service::ServiceContext::default();
+    context.plugins = std::sync::Arc::new(library);
+    let (view, cx, runtime) = test_shell_with(cx, context);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+
+    let id = add_node(&view, cx, NodeKind::Plugin);
+    view.update(cx, |shell, cx| {
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
+        cx.notify();
+    });
+    render(cx);
+
+    // Assign the fixture plugin through the picker row, then wait for the
+    // service to confirm the assignment.
+    let picker_id = gpui_kit::SharedString::from(format!("bind-plugin-{key}"));
+    cx.update(|window, cx| window.click(picker_id.clone(), cx));
+    let budget = Instant::now() + Duration::from_secs(3);
+    wait_until(budget.saturating_duration_since(Instant::now()), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .plugin
+                .as_ref()
+                .is_some_and(|assignment| assignment.id == key)
+        })
+    });
+
+    // The preset picker renders the scanned list; picking a row persists
+    // the factory-program selection.
+    render(cx);
+    cx.update(|window, cx| window.click("preset-1", cx));
+    wait_until(budget.saturating_duration_since(Instant::now()), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .plugin
+                .as_ref()
+                .and_then(|assignment| assignment.preset_program)
+                == Some(1)
+        })
+    });
+    cx.update(|window, _| assert!(window.find("preset-0").visible()));
+
+    // Factory default clears the selection again.
+    cx.update(|window, cx| window.click("preset-default", cx));
+    wait_until(budget.saturating_duration_since(Instant::now()), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            let assignment = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .plugin
+                .clone();
+            assignment.is_some_and(|assignment| assignment.preset_program.is_none())
+        })
+    });
+    finish_service(runtime);
+}
+
+/// The width-adaptation full loop over a real service: clicking a plugin
+/// row whose bus width differs from the unwired node resizes the node in
+/// the same edit, so the assignment lowers without the width fault.
+#[gpui_kit::test]
+fn plugin_picker_assignment_adapts_unwired_node_width(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+    let (library, key) = preset_library_fixture_at(6);
+    let mut context = crate::service::ServiceContext::default();
+    context.plugins = std::sync::Arc::new(library);
+    let (view, cx, runtime) = test_shell_with(cx, context);
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+
+    let id = add_node(&view, cx, NodeKind::Plugin);
+    view.update(cx, |shell, cx| {
+        shell.selection.node = Some(id);
+        shell.chrome.inspector_open = true;
+        cx.notify();
+    });
+    render(cx);
+
+    let picker_id = gpui_kit::SharedString::from(format!("bind-plugin-{key}"));
+    cx.update(|window, cx| window.click(picker_id, cx));
+    let budget = Instant::now() + Duration::from_secs(3);
+    wait_until(budget.saturating_duration_since(Instant::now()), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            let snapshot = &shell.state.read(cx).snapshot;
+            snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .plugin
+                .as_ref()
+                .is_some_and(|assignment| assignment.id == key)
+                && snapshot.graph.graph.get_node(id).unwrap().channels() == 6
+        })
+    });
     finish_service(runtime);
 }

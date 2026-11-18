@@ -648,6 +648,7 @@ impl EngineBackend<f64> for MockBackend {
                 engine_blocks: 0,
                 engine_busy_100ns: 0,
                 engine_peak_block_100ns: 0,
+                engine_over_budget: 0,
                 driver_latency: None,
                 absent: false,
             },

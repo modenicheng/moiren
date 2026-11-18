@@ -422,9 +422,12 @@ fn build_session<S: RecordingSink>(
         .unwrap_or_else(|p| p.into_inner()) = source.reader().map(|reader| reader.pause_handle());
     let worker_shared = Arc::clone(&shared);
     let source = SourceGuard(source);
+    let thread_guard =
+        crate::threads::register_thread("moiren-recording", crate::threads::ThreadClass::Control);
     let worker = thread::Builder::new()
         .name("moiren-recording".into())
         .spawn(move || {
+            thread_guard.enter();
             let mut source = source;
             let result = catch_unwind(AssertUnwindSafe(|| {
                 let mut sink = sink;

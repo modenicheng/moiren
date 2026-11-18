@@ -96,6 +96,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 engine_blocks: 0,
                 engine_busy_100ns: 0,
                 engine_peak_block_100ns: 0,
+                engine_over_budget: 0,
                 driver_latency: Some(moiren_windows_audio::native::NativeLatency {
                     input_frames: 32,
                     output_frames: 64,

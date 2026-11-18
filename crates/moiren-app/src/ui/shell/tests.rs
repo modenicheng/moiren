@@ -1943,6 +1943,99 @@ fn the_engine_panel_button_dispatches_the_transport_toggle(cx: &mut gpui_kit::Te
     finish_service(runtime);
 }
 
+/// The perf panel's reset is a UI-side baseline move: the over-budget
+/// window and the CPU baselines clear at once, with no service request and
+/// no RT counter touched (the next ingest only re-primes).
+#[gpui_kit::test]
+fn the_perf_panel_reset_clears_the_thread_baselines(cx: &mut gpui_kit::TestAppContext) {
+    use crate::system::ThreadSample;
+    use crate::ui::monitoring::runtime::RenderCounters;
+    use crate::ui::shell::status::StatusItem;
+    let (view, cx, runtime) = test_shell(cx);
+    // One live registry row so the panel has a master row to render.
+    let master = moiren_engine::threads::register_thread(
+        "moiren-professional-master",
+        moiren_engine::threads::ThreadClass::Rt,
+    );
+    master.enter();
+    let over_budget = |cx: &mut gpui_kit::VisualTestContext| {
+        view.read_with(cx, |shell, _| {
+            let threads = shell.chrome.perf.threads();
+            threads
+                .rows()
+                .iter()
+                .find(|row| row.name == "moiren-professional-master")
+                .map(|row| row.over_budget)
+                .unwrap_or_default()
+        })
+    };
+    let feed = |shell: &mut crate::ui::shell::StudioShell,
+                blocks: u64,
+                over: u64,
+                at: std::time::Instant| {
+        shell.chrome.perf.ingest_threads(
+            vec![ThreadSample {
+                tid: master.thread_id(),
+                kernel_100ns: 0,
+                user_100ns: 0,
+                create_time_100ns: 7,
+            }],
+            moiren_engine::threads::snapshot(),
+            Default::default(),
+            Some((
+                7,
+                RenderCounters {
+                    blocks,
+                    busy_100ns: 0,
+                    peak_block_100ns: 0,
+                    over_budget: over,
+                    native_callbacks: 0,
+                },
+            )),
+            at,
+            4.,
+        );
+    };
+    view.update(cx, |shell, cx| {
+        let now = std::time::Instant::now();
+        feed(shell, 0, 0, now);
+        feed(shell, 1_000, 3, now + std::time::Duration::from_secs(1));
+        shell.chrome.status_popup = Some(StatusItem::Perf);
+        cx.notify();
+    });
+    assert_eq!(over_budget(cx), 3, "the closed windows landed in the panel");
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.0), px(900.0)));
+        window.render_frame(cx);
+        assert!(window.find("status-panel-perf").visible());
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        // The button hangs in the panel header (same wiring as the XRUN
+        // reset, whose click is exercised end-to-end by
+        // `the_xrun_panel_reset_clears_the_statistics_window`).
+        assert!(window.find("status-perf-reset").bounds().size.width > px(0.));
+    });
+    // The handler's body, invoked directly: the headless fade makes pixel
+    // hit-testing on a freshly-rendered panel flaky under parallel load.
+    view.update(cx, |shell, cx| {
+        shell.chrome.perf.reset_threads();
+        cx.notify();
+    });
+    assert_eq!(over_budget(cx), 0, "reset cleared the window");
+    // The next pair only re-primes: no burst from the pre-reset counters.
+    view.update(cx, |shell, _| {
+        feed(
+            shell,
+            2_000,
+            3,
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        );
+    });
+    assert_eq!(over_budget(cx), 0, "the rebased pair counted nothing");
+    finish_service(runtime);
+}
+
 #[gpui_kit::test]
 fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
     cx: &mut gpui_kit::TestAppContext,

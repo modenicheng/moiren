@@ -24,7 +24,12 @@ impl Lane {
         let (sender, receiver) = mpsc::sync_channel::<Job>(1);
         let busy = Arc::new(AtomicBool::new(false));
         let flag = busy.clone();
+        let thread_guard = moiren_engine::threads::register_thread(
+            name,
+            moiren_engine::threads::ThreadClass::Control,
+        );
         let thread = thread::Builder::new().name(name.into()).spawn(move || {
+            thread_guard.enter();
             while let Ok(job) = receiver.recv() {
                 // Unwinding disposes job captures on this worker and releases
                 // completion reservations; keep the lane usable afterward.

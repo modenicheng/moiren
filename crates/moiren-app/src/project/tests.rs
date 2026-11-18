@@ -1248,11 +1248,13 @@ fn plugin_assignments_round_trip_through_graph_documents() {
     let assignment = crate::service::PluginAssignment {
         id: "CLAP|org.example.gain|C:/plugins/gain.clap".into(),
         preset: Some(vec![1, 2, 3, 4]),
+        preset_program: None,
     };
     service
         .edit(crate::service::GraphEdit::BindPlugin {
             node: plugin_node,
             assignment: Some(assignment.clone()),
+            adapt_channels: None,
         })
         .unwrap();
     // Snapshot -> document -> JSON -> document -> graph keeps the

@@ -741,9 +741,16 @@ impl VadSession {
         let capture_shared = capture.as_ref().map(|capture| capture.shared());
         let output_shared = output_capture.as_ref().map(|capture| capture.shared());
         let worker_state = state.clone();
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-vad-pcm",
+            moiren_engine::threads::ThreadClass::Rt,
+        );
         let worker = thread::Builder::new()
             .name("moiren-vad-pcm".into())
-            .spawn(move || run_worker(config, worker_state, capture, output_capture))
+            .spawn(move || {
+                thread_guard.enter();
+                run_worker(config, worker_state, capture, output_capture)
+            })
             .map_err(|error| {
                 state.drained.store(true, Ordering::Release);
                 if let Some(capture) = &capture_shared {

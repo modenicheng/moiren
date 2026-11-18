@@ -120,9 +120,10 @@ pub struct CardRecording {
     pub file_name: String,
 }
 
-/// One transport affordance on a recorder card. Which exist in a phase is
+/// One transport affordance on a recorder card. Which a phase offers is
 /// decided by [`RecordAction::available`], the single list both the paint
-/// and the hit test consult so the two can never drift apart.
+/// (which dims the rest) and the hit test consult so the two can never
+/// drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordAction {
     /// Begin a new file (idle, or after a terminal session).

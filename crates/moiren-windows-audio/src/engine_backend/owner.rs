@@ -384,6 +384,21 @@ pub(super) fn start_worker<S: ProcessingSample>(
     let state = request.state.clone();
     let panic_state = state.clone();
     let worker_fence = fence.clone();
+    let (name, class) = if request.master {
+        (
+            "moiren-professional-master",
+            moiren_engine::threads::ThreadClass::Rt,
+        )
+    } else {
+        (
+            "moiren-professional-device",
+            moiren_engine::threads::ThreadClass::Rt,
+        )
+    };
+    // The registry row is created here on the spawning control thread; the
+    // worker's only registry action is the `enter` below — one syscall and
+    // one relaxed store on the realtime thread (see `moiren_engine::threads`).
+    let thread_guard = moiren_engine::threads::register_thread(name, class);
     let handle = thread::Builder::new()
         .name(if request.master {
             "moiren-professional-master".into()
@@ -391,6 +406,7 @@ pub(super) fn start_worker<S: ProcessingSample>(
             "moiren-professional-device".into()
         })
         .spawn(move || {
+            thread_guard.enter();
             log::debug!(
                 target: "moiren::audio::professional",
                 "native worker started: master={}",
@@ -655,6 +671,18 @@ impl Drop for RenderEvidenceStreamGuard<'_> {
     }
 }
 
+/// Whether the closed window's worst block exceeded one block's audio time:
+/// the render schedule was at risk in that window. Pure so the threshold
+/// math is testable without a second of audio.
+pub(super) fn window_over_budget(
+    window_peak_100ns: u64,
+    block_frames: usize,
+    engine_rate: u32,
+) -> bool {
+    let block_100ns = (block_frames as u64) * 10_000_000 / u64::from(engine_rate);
+    window_peak_100ns > block_100ns
+}
+
 pub(super) struct Pump {
     consumer_events: Option<crate::latency::events::EventHistoryWriter>,
     capture: Option<Producer<StereoFrame>>,
@@ -858,6 +886,13 @@ impl Pump {
                             self.counters
                                 .render_peak_ticks
                                 .store(self.window_peak, Ordering::Relaxed);
+                            // Over-budget probe: the window's worst block
+                            // exceeded one block's audio time, so the render
+                            // schedule was at risk. One relaxed add per closed
+                            // window — no allocation, no lock, no syscall.
+                            if window_over_budget(self.window_peak, block, self.engine_rate) {
+                                self.counters.over_budget.fetch_add(1, Ordering::Relaxed);
+                            }
                             self.window_blocks = 0;
                             self.window_peak = 0;
                         }

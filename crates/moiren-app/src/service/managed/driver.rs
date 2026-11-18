@@ -111,7 +111,7 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
-            AppRequest::ScanPlugins => self.plugin_scan.request(),
+            AppRequest::ScanPlugins { force } => self.plugin_scan.request(force),
             AppRequest::Start(spec) => {
                 self.cancel_startup_automation();
                 self.auto_apply_deadline = None;
@@ -688,7 +688,8 @@ impl ManagedDriver {
         );
     }
     /// Submit the requested sandboxed plugin scan on the prepare lane. The
-    /// job spawns one scanner subprocess per standard root and waits out
+    /// job serves unchanged roots from the scan cache (or spawns one scanner
+    /// subprocess per remaining standard root when forced) and waits out
     /// their deadlines, so it never runs on the service thread.
     fn poll_plugin_scan(&mut self, pool: &mut JobPool) {
         if self.exiting || !self.plugin_scan.requested || self.plugin_scan.running {
@@ -700,16 +701,20 @@ impl ManagedDriver {
         let Ok(credit) = completions.port().try_reserve() else {
             return;
         };
+        let force = self.plugin_scan.force;
         let job: Job = Box::new(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                super::super::run_sandbox_scan,
-            ))
-            .unwrap_or_else(|_| {
-                Err(super::super::BackendError::new(
-                    "plugin-scan",
-                    "the scan worker panicked",
-                ))
-            });
+            let scan = if force {
+                super::super::run_forced_plugin_scan
+            } else {
+                super::super::run_sandbox_scan
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(scan))
+                .unwrap_or_else(|_| {
+                    Err(super::super::BackendError::new(
+                        "plugin-scan",
+                        "the scan worker panicked",
+                    ))
+                });
             credit.send_or_dispose(Completion::PluginScan(result), drop);
         });
         if pool.try_submit_owned(JobPriority::Prepare, job).is_ok() {

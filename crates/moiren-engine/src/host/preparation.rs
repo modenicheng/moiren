@@ -79,9 +79,14 @@ pub(crate) fn spawn<S: ProcessingSample>(
     jobs: Receiver<PrepareJob>,
     completed: SyncSender<Completion<S>>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+    let thread_guard = crate::threads::register_thread(
+        "moiren-host-prepare",
+        crate::threads::ThreadClass::Control,
+    );
     thread::Builder::new()
         .name("moiren-host-prepare".into())
         .spawn(move || {
+            thread_guard.enter();
             while let Ok(job) = jobs.recv() {
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     prepare(&config, &shared, backend.as_ref(), &job)

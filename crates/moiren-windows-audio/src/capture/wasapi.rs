@@ -296,9 +296,16 @@ pub(crate) fn start_owner_returning_with_abort_policy<A>(
     stop_without_owner: bool,
 ) -> Result<PreparedCapture, Box<CapturePreparationAbortFailure<A>>> {
     start_owner_with_spawn(signal, owner, before_join, stop_without_owner, |owner| {
+        let thread_guard = moiren_engine::threads::register_thread(
+            "moiren-shared-capture",
+            moiren_engine::threads::ThreadClass::Rt,
+        );
         thread::Builder::new()
             .name("moiren-shared-capture".into())
-            .spawn(owner)
+            .spawn(move || {
+                thread_guard.enter();
+                owner()
+            })
     })
 }
 

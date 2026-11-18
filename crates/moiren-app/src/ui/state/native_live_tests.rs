@@ -634,6 +634,7 @@ fn professional_and_native_diagnostics_coexist_and_filter_stale_publishers_indep
                 engine_blocks: 0,
                 engine_busy_100ns: 0,
                 engine_peak_block_100ns: 0,
+                engine_over_budget: 0,
                 native_capture_quality: None,
                 driver_latency: None,
                 absent: false,

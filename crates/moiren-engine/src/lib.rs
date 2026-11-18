@@ -17,3 +17,4 @@ pub mod signal;
 pub mod spectrum;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod threads;

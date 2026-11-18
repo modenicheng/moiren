@@ -64,6 +64,9 @@ pub struct ProfessionalStreamObservation {
     pub engine_blocks: u64,
     pub engine_busy_100ns: u64,
     pub engine_peak_block_100ns: u64,
+    /// One-second windows whose worst block exceeded one block's audio time
+    /// (the master pump's over-budget probe; the panel shows its 60 s count).
+    pub engine_over_budget: u64,
     pub driver_latency: Option<NativeLatency>,
     /// The endpoint's device is missing: the stream is a silent null stream
     /// binding, not a native worker, and returns automatically once the
@@ -108,6 +111,10 @@ pub(crate) struct Counters {
     pub blocks: AtomicU64,
     pub render_ticks: AtomicU64,
     pub render_peak_ticks: AtomicU64,
+    /// Master pump only: one-second windows whose worst block exceeded one
+    /// block's audio time — the over-budget probe the panel counts in a 60 s
+    /// window. One relaxed add per closed window; readers only load.
+    pub over_budget: AtomicU64,
     native_callbacks: AtomicU64,
     native_wait_wakes: AtomicU64,
     native_written_frames: AtomicU64,
@@ -243,6 +250,7 @@ fn professional_snapshot(session: &Session) -> ProfessionalObservationSnapshot {
                 stream.engine_blocks = counters.blocks.load(Ordering::Relaxed);
                 stream.engine_busy_100ns = counters.render_ticks.load(Ordering::Relaxed);
                 stream.engine_peak_block_100ns = counters.render_peak_ticks.load(Ordering::Relaxed);
+                stream.engine_over_budget = counters.over_budget.load(Ordering::Relaxed);
                 stream.driver_latency = counters.driver_latency();
                 stream
             })
@@ -479,6 +487,7 @@ mod tests {
             engine_blocks: 0,
             engine_busy_100ns: 0,
             engine_peak_block_100ns: 0,
+            engine_over_budget: 0,
             driver_latency: None,
             absent: false,
         };
@@ -503,6 +512,7 @@ mod tests {
         fresh.blocks.store(41_000, Ordering::Relaxed);
         fresh.render_ticks.store(9_000, Ordering::Relaxed);
         fresh.render_peak_ticks.store(150, Ordering::Relaxed);
+        fresh.over_budget.store(2, Ordering::Relaxed);
         fresh.publish_native(
             NativeStreamStats {
                 capture_quality_available: true,
@@ -538,6 +548,7 @@ mod tests {
         assert_eq!(actual.engine_blocks, 41_000);
         assert_eq!(actual.engine_busy_100ns, 9_000);
         assert_eq!(actual.engine_peak_block_100ns, 150);
+        assert_eq!(actual.engine_over_budget, 2);
         assert_eq!(actual.driver_latency.unwrap().output_frames, 64);
         assert_eq!(
             actual.native_capture_quality,
