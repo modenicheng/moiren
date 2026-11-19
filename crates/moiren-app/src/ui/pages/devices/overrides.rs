@@ -4,6 +4,10 @@ use crate::ui::widgets::overlay_scrollbar::{notify_owner, scroll_region};
 use gpui_kit::base::ScrollbarAxis;
 use rust_i18n::t;
 
+/// The inspected device's configuration and monitoring (design 23 §3.3). The
+/// chrome is the shared inspector column's flush panel — the same `panel()`
+/// language the empty state uses, not a floating card inside the column —
+/// with the draft footer pinned under the scrolled content.
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let input = shell.devices.device_tab == DeviceTab::Inputs;
     let direction = if input {
@@ -53,15 +57,22 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         } else {
             t!("Output configuration")
         }))
-        .child(badge(
-            if custom {
-                t!("Device override")
-            } else {
-                t!("Using global defaults")
-            },
-            theme::controls::FOCUS,
-        ))
-        .child(detail(
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(theme::SPACE_1_5))
+                .child(badge(
+                    if custom {
+                        t!("Device override")
+                    } else {
+                        t!("Using global defaults")
+                    },
+                    theme::controls::FOCUS,
+                )),
+        )
+        .child(hairline())
+        .child(detail_mono(
             &t!("Saved request"),
             settings::stream_summary(snapshot.audio_settings.backend, saved),
         ));
@@ -131,60 +142,22 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         input,
     };
     let users = monitor::device_users(snapshot, &device);
-    content = content.child(heading(t!("Users")));
+    content = content.child(hairline()).child(section_title(t!("Users")));
     if users.is_empty() {
         content = content.child(label(t!("No nodes are bound to this device.")));
     } else {
-        let timing = crate::ui::presentation::native_timing_views(snapshot);
-        for user in &users {
-            let node = user.node;
-            let state_text = match user.state {
-                monitor::UserState::Running => t!("Running").to_string(),
-                monitor::UserState::NotRunning => {
-                    if snapshot.phase == SessionPhase::Running {
-                        t!("Waiting to take effect").to_string()
-                    } else {
-                        t!("Not running").to_string()
-                    }
-                }
-                monitor::UserState::Detached => {
-                    t!("Binding changed; the old stream is still running").to_string()
-                }
-            };
-            let this = cx.entity();
-            content = content.child(
-                div()
-                    .id(SharedString::from(format!("device-user-{node:?}")))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(theme::SPACE_2))
-                    .child(label(user.label.clone()).min_w_0().truncate())
-                    .child(if user.state == monitor::UserState::Running {
-                        badge(state_text, theme::SIGNAL_DEVICE)
-                    } else {
-                        label(state_text)
-                    })
-                    .child(
-                        button(
-                            SharedString::from(format!("reveal-{node:?}")),
-                            t!("Locate in graph"),
-                        )
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |shell, cx| shell.reveal_node(node, cx));
-                        }),
-                    )
-                    .gpui_test_observe(),
-            );
-            for view in timing
-                .streams
-                .iter()
-                .filter(|view| view.node == node && user.state == monitor::UserState::Running)
-            {
-                for (key, value) in &view.rows {
-                    content = content.child(detail(key, value.clone()));
-                }
-            }
+        for row in user_rows(
+            snapshot,
+            &device,
+            |node| {
+                (
+                    SharedString::from(format!("device-user-{node:?}")),
+                    SharedString::from(format!("reveal-{node:?}")),
+                )
+            },
+            cx,
+        ) {
+            content = content.child(row);
         }
         // The request the running engine actually honored on this device —
         // only meaningful while a stream is live here.
@@ -201,7 +174,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             } else {
                 active.effective_output(id)
             };
-            content = content.child(detail(
+            content = content.child(detail_mono(
                 &t!("Active request"),
                 settings::stream_summary(active.backend, active_stream),
             ));
@@ -216,9 +189,8 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .flex_col()
         .min_h_0()
         .bg(theme::SURFACE)
-        .border_1()
+        .border_l_1()
         .border_color(theme::BORDER)
-        .rounded(px(theme::RADIUS_MD))
         .child(
             scroll_region(
                 "scrollbar-device-override-scroll",

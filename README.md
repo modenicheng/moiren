@@ -27,7 +27,7 @@ cargo build --locked --workspace
 cargo test --locked --workspace
 ```
 
-普通测试不打开音频设备。完整验证命令集（check、clippy、fmt 与 gpui-test 验收等）以 [AGENTS.md](AGENTS.md) 为准。有限时长的实机探针（`asio_probe`、`exclusive_probe`、W00 系列）与硬件验证记录见 [windows-audio README](crates/moiren-windows-audio/README.md)；这些探针不改变系统默认设备或音量。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
+普通测试不打开音频设备。完整验证命令集（check、clippy、fmt、功能门控与 gpui-test 验收等）见 [开发与协作细则](docs/development/verification.md)；顶层规则见 [AGENTS.md](AGENTS.md)。有限时长的实机探针（`asio_probe`、`exclusive_probe`、W00 系列）与硬件验证记录见 [windows-audio README](crates/moiren-windows-audio/README.md)；这些探针不改变系统默认设备或音量。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
 
 ## 当前边界
 
@@ -39,6 +39,7 @@ cargo test --locked --workspace
 
 ## 文档
 
+- [开发与协作细则](docs/development/README.md)（worktree、验证门禁、架构规则、文档与协作约定）
 - [托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)（其验证记录原在
   superpowers 计划目录，该目录已于 2026-10-31 从仓库移除，见 git 历史）
 - [EngineHost 所有权与更新](crates/moiren-engine/README.md)

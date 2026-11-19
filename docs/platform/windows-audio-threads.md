@@ -4,9 +4,9 @@ This is the canonical map of every OS thread that drives or observes audio in
 Moiren, what each may do, and where its authority lives. Per-module realtime
 contracts (`asio/callback.rs`, `vad/pcm.rs`, `vad/pcm_bridge.rs`, `servo.rs`,
 `resample.rs`, `native.rs`, `bridge.rs`, …) stay in their own module headers;
-this page links them instead of restating them. The workspace rule they all
-implement is the one in `AGENTS.md`: prepare graphs, buffers and signal
-bindings off the audio thread; realtime processing must avoid heap
+this page links them instead of restating them. The workspace rules they all
+implement are in `docs/development/architecture.md`: prepare graphs, buffers and
+signal bindings off the audio thread; realtime processing must avoid heap
 allocation/deallocation and blocking; reclaim retired plans on the control side.
 
 Thread names below are the literal `thread::Builder` names — they appear in

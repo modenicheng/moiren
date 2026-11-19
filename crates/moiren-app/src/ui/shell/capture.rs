@@ -546,6 +546,40 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     });
                     cx.background_executor().timer(Duration::from_millis(100)).await;
                     capture(cx, directory.join(format!("{name}-device-override.png")));
+                    // Each devices tab is its own surface — list composition,
+                    // the virtual-device creation panel, the clock overview,
+                    // and every empty state — so one shot per tab keeps a
+                    // devices-page change reviewable without driving a real
+                    // pointer. The Outputs tab is the `{name}-devices` shot.
+                    for (tab_name, tab) in [
+                        (
+                            "devices-inputs",
+                            crate::ui::pages::devices::DeviceTab::Inputs,
+                        ),
+                        (
+                            "devices-exports",
+                            crate::ui::pages::devices::DeviceTab::Exports,
+                        ),
+                        (
+                            "devices-clock",
+                            crate::ui::pages::devices::DeviceTab::Clock,
+                        ),
+                    ] {
+                        shell.update(cx, |s, cx| {
+                            s.devices.device_tab = tab;
+                            s.devices.selected_device = None;
+                            cx.notify();
+                        });
+                        cx.background_executor()
+                            .timer(Duration::from_millis(100))
+                            .await;
+                        capture(cx, directory.join(format!("{name}-{tab_name}.png")));
+                    }
+                    shell.update(cx, |s, cx| {
+                        s.devices.device_tab =
+                            crate::ui::pages::devices::DeviceTab::Outputs;
+                        cx.notify();
+                    });
                     let _ = window.update(cx, |_, window, cx| {
                         shell.update(cx, |s, cx| {
                             s.set_page(Page::Graph, cx);

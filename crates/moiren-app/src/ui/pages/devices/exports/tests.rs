@@ -209,8 +209,12 @@ mod headless {
                 } else {
                     -100.
                 };
+                // Wheel the reading column's own scroll container, not the
+                // page: the column is left-anchored and capped, so the page's
+                // center can fall beside it and a page-centered wheel would
+                // never reach the list.
                 window.scroll(
-                    "devices-page",
+                    "virtual-export-list",
                     ScrollDelta::Pixels(point(px(0.), px(delta))),
                     cx,
                 );
@@ -393,9 +397,12 @@ mod headless {
             .find(|node| node.kind() == moiren_core::graph::NodeKind::Source)
             .unwrap()
             .id();
-        // Unbound: the page points at the node instead of binding here.
-        cx.update(|window, cx| {
-            window.render_frame(cx);
+        // Unbound: the page points at the node instead of binding here. The
+        // card's users block sits below the first fold on short windows, so
+        // reach it the way a user does — by scrolling (a no-op when the
+        // control already fits).
+        scroll_to_control(cx, SharedString::from(format!("export-users-empty-{id}")));
+        cx.update(|window, _| {
             assert!(window.try_find(key("bind")).is_none());
             assert!(window.try_find(key("unbind")).is_none());
             assert!(
@@ -426,8 +433,11 @@ mod headless {
             None,
             "binding edits do not activate audio"
         );
-        cx.update(|window, cx| {
-            window.render_frame(cx);
+        scroll_to_control(
+            cx,
+            SharedString::from(format!("export-user-{id}-{source:?}")),
+        );
+        cx.update(|window, _| {
             assert!(
                 window
                     .find(SharedString::from(format!("export-user-{id}-{source:?}")))
