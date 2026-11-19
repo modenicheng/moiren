@@ -61,6 +61,10 @@ disables AC/DC sleep and hibernation before launch. It neither installs a driver
 nor changes audio defaults. Each phase lasts continuously within one owning App
 session; repeating short processes is not equivalent.
 
+For a looping WAV supplied through `-PcmFile`, the runner verifies the requested
+signal duration in `soak_music` in the final probe report. The generated signal
+mode records its duration in `soak_pcm`.
+
 Keep `running.json`, `resources.jsonl`, `stdout.log`, `stderr.log`, the probe's
 periodic progress, its final `report.json`, and the runner's `result.json`.
 The resource log is streamed and flushed; the runner retains no sample array

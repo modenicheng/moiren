@@ -16,11 +16,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-function Confirm-SoakReport($Report, [int]$Idle, [int]$Pcm, [double]$ElapsedSeconds) {
+function Confirm-SoakReport($Report, [int]$Idle, [int]$Pcm, [double]$ElapsedSeconds, [switch]$Music) {
     if ($Report.status -ne 'passed' -or -not $Report.service_joined -or -not $Report.control_session_released) {
         throw 'Final report does not confirm requested stages and orderly service teardown'
     }
-    foreach ($phase in @(@{ Name = 'soak_idle'; Seconds = $Idle }, @{ Name = 'soak_pcm'; Seconds = $Pcm })) {
+    $signalPhase = if ($Music) { 'soak_music' } else { 'soak_pcm' }
+    foreach ($phase in @(@{ Name = 'soak_idle'; Seconds = $Idle }, @{ Name = $signalPhase; Seconds = $Pcm })) {
         if ($phase.Seconds -eq 0) { continue }
         $evidence = $Report.($phase.Name)
         $requested = [long]$phase.Seconds * 1000
@@ -228,7 +229,7 @@ namespace MoirenVadSoak {
     $reportPath = Join-Path $probeDirectory 'report.json'
     if (-not (Test-Path -LiteralPath $reportPath)) { throw 'Probe exited without its final report' }
     $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-    Confirm-SoakReport $report $IdleSeconds $PcmSeconds $probeClock.Elapsed.TotalSeconds
+    Confirm-SoakReport $report $IdleSeconds $PcmSeconds $probeClock.Elapsed.TotalSeconds -Music:([bool]$PcmFile)
     if ($sampleCount -lt 2 -or $poolSamples -lt 1) { throw 'Insufficient resource samples' }
     if ($resourceErrors) { throw "Probe passed but $resourceErrors resource observations failed" }
     $status = 'passed'
