@@ -8,6 +8,7 @@ pub(super) struct Options {
     pub rename: bool,
     pub rename_streaming: bool,
     pub rename_fixture_seed: Option<u64>,
+    pub fresh_fixture: bool,
     pub help: bool,
     pub timeout_seconds: u64,
     pub soak_idle_seconds: u64,
@@ -27,6 +28,7 @@ impl Options {
             rename: false,
             rename_streaming: false,
             rename_fixture_seed: None,
+            fresh_fixture: false,
             help: false,
             timeout_seconds: 30,
             soak_idle_seconds: 0,
@@ -41,6 +43,7 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--pcm" if !options.pcm => options.pcm = true,
                 "--rename" if !options.rename => options.rename = true,
+                "--fresh-fixture" if !options.fresh_fixture => options.fresh_fixture = true,
                 "--rename-streaming" if !options.rename_streaming => {
                     options.rename_streaming = true
                 }
@@ -138,6 +141,10 @@ impl Options {
         ensure!(
             options.rename_fixture_seed.is_none() || (options.exercise && options.rename),
             "--rename-fixture-seed requires --exercise --rename"
+        );
+        ensure!(
+            !options.fresh_fixture || (options.exercise && options.rename_fixture_seed.is_none()),
+            "--fresh-fixture requires --exercise and excludes --rename-fixture-seed"
         );
         ensure!(
             !options.rename
@@ -398,6 +405,29 @@ mod tests {
             vec!["--exercise", "--pcm"],
         ] {
             assert_eq!(parse(&arguments).unwrap().rename_fixture_seed, None);
+        }
+    }
+
+    #[test]
+    fn fresh_fixture_requires_explicit_exercise_and_a_single_identity_source() {
+        for exercise in [
+            vec!["--exercise", "--fresh-fixture"],
+            vec!["--exercise", "--pcm", "--fresh-fixture"],
+            vec!["--exercise", "--rename-streaming", "--fresh-fixture"],
+        ] {
+            assert!(parse(&exercise).is_ok());
+        }
+        for invalid in [
+            vec!["--fresh-fixture"],
+            vec!["--exercise", "--fresh-fixture", "--fresh-fixture"],
+            vec![
+                "--exercise",
+                "--rename",
+                "--fresh-fixture",
+                "--rename-fixture-seed=1",
+            ],
+        ] {
+            assert!(parse(&invalid).is_err());
         }
     }
 

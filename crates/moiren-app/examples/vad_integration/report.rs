@@ -1,4 +1,5 @@
 use moiren_app::service::{ExportDirection, ExportStatus};
+use moiren_engine::node::VirtualEndpointId;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +23,8 @@ pub(super) struct Report {
     pub rename_streaming: Option<Vec<super::rename::stream::Case>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rename_fixture_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixture_source: Option<&'static str>,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
     pub soak_idle: Option<super::soak::IdleSoak>,
@@ -68,6 +71,7 @@ impl Default for Report {
             rename: None,
             rename_streaming: None,
             rename_fixture_seed: None,
+            fixture_source: None,
             idle_hold: None,
             pcm: None,
             soak_idle: None,
@@ -220,6 +224,50 @@ pub(super) struct Evidence {
 }
 
 impl Evidence {
+    pub fn fixture_session(&self) -> Option<u64> {
+        let [first, second] = self.exports.as_slice() else {
+            return None;
+        };
+        let identity = |export: &ExportEvidence| {
+            let [runtime, session, generation, ..] = export.native_stamp?;
+            (runtime != 0 && session != 0 && runtime == generation).then_some((runtime, session))
+        };
+        let (first_runtime, first_session) = identity(first)?;
+        let (second_runtime, second_session) = identity(second)?;
+        (first_runtime != second_runtime && first_session == second_session)
+            .then_some(first_session)
+    }
+
+    pub fn established_fixture(&self, request: u64) -> Option<[VirtualEndpointId; 2]> {
+        if self.phase != "idle"
+            || self.active_revision.is_some()
+            || self.pending_revision.is_some()
+            || self.consumed_request_id < request
+            || self.error.is_some()
+            || self.graph_error.is_some()
+        {
+            return None;
+        }
+        self.fixture_session()?;
+        let created = |direction| {
+            let export = self.exports.iter().find(|export| {
+                export.direction == direction
+                    && export.present
+                    && export.enabled
+                    && !export.bound
+                    && export.channels == 2
+                    && !export.allow_default
+                    && !export.gate_open
+                    && export.active_revision.is_none()
+            })?;
+            let id: VirtualEndpointId = export.endpoint_id.parse().ok()?;
+            (id.to_bytes() != [0; 16]).then_some(id)
+        };
+        let playback = created(ExportDirection::Playback)?;
+        let microphone = created(ExportDirection::Microphone)?;
+        (playback != microphone).then_some([playback, microphone])
+    }
+
     pub fn running(&self, ids: &[String; 2], request: u64) -> bool {
         self.owner_running(ids, request) && self.gates_open()
     }
@@ -334,6 +382,48 @@ mod tests {
                 .collect(),
             error: None,
             graph_error: None,
+        }
+    }
+
+    #[test]
+    fn fresh_fixture_uses_only_the_two_prepared_unbound_exports_from_one_session() {
+        let playback = VirtualEndpointId::from_bytes([1; 16]);
+        let microphone = VirtualEndpointId::from_bytes([2; 16]);
+        let mut evidence = running();
+        evidence.phase = "idle".into();
+        evidence.active_revision = None;
+        for ((export, id), runtime) in evidence
+            .exports
+            .iter_mut()
+            .zip([playback, microphone])
+            .zip([31, 32])
+        {
+            export.endpoint_id = id.to_string();
+            export.bound = false;
+            export.gate_open = false;
+            export.active_revision = None;
+            export.native_stamp = Some([runtime, 42, runtime, 0, 1]);
+        }
+        evidence.exports.reverse();
+        assert_eq!(evidence.fixture_session(), Some(42));
+        assert_eq!(
+            evidence.established_fixture(2),
+            Some([playback, microphone])
+        );
+        assert!(evidence.established_fixture(3).is_none());
+        for change in [
+            |e: &mut Evidence| e.exports[0].native_stamp = Some([32, 99, 32, 0, 1]),
+            |e: &mut Evidence| e.exports[0].native_stamp = e.exports[1].native_stamp,
+            |e: &mut Evidence| e.exports[0].native_stamp = None,
+            |e: &mut Evidence| e.exports[0].gate_open = true,
+            |e: &mut Evidence| e.exports[0].present = false,
+            |e: &mut Evidence| e.exports[0].bound = true,
+            |e: &mut Evidence| e.exports[0].allow_default = true,
+            |e: &mut Evidence| e.exports[0].endpoint_id = e.exports[1].endpoint_id.clone(),
+        ] {
+            let mut invalid = evidence.clone();
+            change(&mut invalid);
+            assert!(invalid.established_fixture(2).is_none());
         }
     }
 

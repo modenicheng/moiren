@@ -7,7 +7,10 @@ use super::{
     soak, validation,
 };
 use anyhow::{Context, bail, ensure};
-use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
+use moiren_app::{
+    project::StartupDocuments,
+    service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase},
+};
 use moiren_core::graph::NodeKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
@@ -37,6 +40,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     eprintln!("integration evidence directory: {}", directory.display());
     let initial_report = Report {
         rename_fixture_seed: options.rename_fixture_seed,
+        fixture_source: options.fresh_fixture.then_some("app_create_export"),
         ..Default::default()
     };
     let shared = Arc::new(Mutex::new(Progress {
@@ -160,6 +164,7 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -> Report {
     let mut report = Report {
         rename_fixture_seed: options.rename_fixture_seed,
+        fixture_source: options.fresh_fixture.then_some("app_create_export"),
         ..Default::default()
     };
     let pcm = options.pcm;
@@ -234,19 +239,37 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         });
     }
     let timeout = Duration::from_secs(options.timeout_seconds);
+    if options.fresh_fixture {
+        report.limitations.push(
+            "Fresh fixtures are established by a separate App service before the saved-project test session.",
+        );
+    }
     // Long soak keeps a fixed cleanup reserve; a ratio would truncate 16h work.
     let work_deadline = started + options.work_budget();
     let overall_deadline = started + timeout;
     let outcome = (|| -> anyhow::Result<()> {
-        let startup = project::persist(directory, options.rename_fixture_seed)?;
-        report.persisted_project_verified = true;
-        publish(shared, &report);
         // Load soak material before any driver/service work so a rejected
         // file fails without touching native audio.
         let material = match &options.soak_pcm_file {
             Some(path) => Some(material::load(path).context("music soak material")?),
             None => None,
         };
+        let (startup, fixture_session) = if options.fresh_fixture {
+            let (startup, session) =
+                establish_fixture(directory, work_deadline, &mut runtime, &mut report, shared)?;
+            ensure!(
+                Instant::now() < work_deadline,
+                "fixture persistence exceeded the work deadline"
+            );
+            (startup, Some(session))
+        } else {
+            (
+                project::persist(directory, options.rename_fixture_seed)?,
+                None,
+            )
+        };
+        report.persisted_project_verified = true;
+        publish(shared, &report);
         let document = startup
             .project
             .as_ref()
@@ -281,12 +304,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             ManagedDriver::windows()
         };
         let service = ServiceRuntime::spawn_with_startup(driver, startup)?;
-        let handle = service.handle();
-        shared
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .handle = Some(handle.clone());
-        runtime = Some(service);
+        let handle = retain_service(service, &mut runtime, shared);
         let initial = handle.try_snapshot().context("missing startup snapshot")?;
         ensure!(
             initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
@@ -315,7 +333,14 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             "apply_no_probe_clients",
             &mut report,
             shared,
-            |evidence| evidence.running(&ids, applied.0),
+            |evidence| {
+                evidence.running(&ids, applied.0)
+                    && fixture_session.is_none_or(|previous| {
+                        evidence
+                            .fixture_session()
+                            .is_some_and(|current| current != previous)
+                    })
+            },
         )?;
         ensure!(
             running.active_revision.is_some(),
@@ -471,6 +496,103 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
     report.elapsed_ms = started.elapsed().as_millis();
     publish(shared, &report);
     report
+}
+
+fn establish_fixture(
+    directory: &Path,
+    deadline: Instant,
+    runtime: &mut Option<ServiceRuntime>,
+    report: &mut Report,
+    shared: &Shared,
+) -> anyhow::Result<(StartupDocuments, u64)> {
+    let mut document = project::document()?;
+    ensure!(
+        Instant::now() < deadline,
+        "fixture setup work deadline elapsed"
+    );
+    let service = ServiceRuntime::spawn_with_driver(ManagedDriver::windows())?;
+    let handle = retain_service(service, runtime, shared);
+    let initial = handle
+        .try_snapshot()
+        .context("missing fixture service snapshot")?;
+    ensure!(
+        initial.phase == SessionPhase::Idle
+            && initial.graph.active_revision.is_none()
+            && initial.graph.exports.is_empty(),
+        "fixture service must start with an empty export list"
+    );
+
+    let mut request = initial.consumed_request_id;
+    for export in &document.exports {
+        request = handle
+            .try_request_tracked(AppRequest::CreateExport {
+                direction: export.direction,
+                name: export.name.clone(),
+                channels: export.channels,
+            })
+            .map_err(|error| anyhow::anyhow!("CreateExport enqueue: {error:?}"))?;
+    }
+    let created = wait(
+        &handle,
+        deadline,
+        "fixture_exports_established",
+        report,
+        shared,
+        |evidence| evidence.established_fixture(request.0).is_some(),
+    )?;
+    let ids = created
+        .established_fixture(request.0)
+        .context("missing established fixture IDs")?;
+    let session = created
+        .fixture_session()
+        .context("missing fixture control session")?;
+    // Present is published by the driver after its policy has been prepared.
+    // End this owner before loading saved IDs in a new control session.
+    handle.request_exit();
+    let exited = wait(
+        &handle,
+        deadline,
+        "fixture_service_drained",
+        report,
+        shared,
+        |evidence| evidence.phase == "exited",
+    )?;
+    runtime
+        .take()
+        .expect("retained fixture service")
+        .join()
+        .map_err(|error| anyhow::anyhow!("fixture service join: {error:?}"))?;
+    shared
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .handle = None;
+    ensure!(
+        exited.exited(),
+        "fixture service exit did not confirm closed gates"
+    );
+    ensure!(
+        Instant::now() < deadline,
+        "fixture setup exceeded the work deadline"
+    );
+    record(report, "fixture_service_joined", exited, shared);
+    for (export, id) in document.exports.iter_mut().zip(ids) {
+        export.endpoint_id = id;
+    }
+    Ok((project::persist_document(directory, &document)?, session))
+}
+
+fn retain_service(
+    service: ServiceRuntime,
+    runtime: &mut Option<ServiceRuntime>,
+    shared: &Shared,
+) -> AppHandle {
+    let handle = service.handle();
+    shared
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .handle = Some(handle.clone());
+    *runtime = Some(service);
+    handle
 }
 
 const IDLE_HOLD: Duration = Duration::from_secs(4);

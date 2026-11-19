@@ -105,13 +105,20 @@ pub(super) fn document_with_seed(seed: Option<u64>) -> anyhow::Result<ProjectDoc
 }
 
 pub(super) fn persist(directory: &Path, seed: Option<u64>) -> anyhow::Result<StartupDocuments> {
+    persist_document(directory, &document_with_seed(seed)?)
+}
+
+pub(super) fn persist_document(
+    directory: &Path,
+    document: &ProjectDocument,
+) -> anyhow::Result<StartupDocuments> {
     let project_path = directory.join("project.moiren");
     let preferences_path = directory.join("preferences.json");
     anyhow::ensure!(
         !project_path.exists() && !preferences_path.exists(),
         "probe will not overwrite existing documents"
     );
-    save_project(&project_path, &document_with_seed(seed)?)?;
+    save_project(&project_path, document)?;
     save_preferences_at(
         &preferences_path,
         &AppPreferences {

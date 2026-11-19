@@ -70,6 +70,22 @@ Local UI validation preserves explanatory UTF-16/name feedback; mailbox and
 service validation remain additional boundaries. Neither new intent nor fresh
 allocation grants default-role eligibility or binds an Engine node implicitly.
 
+## Testing on a clean installation
+
+The app integration probe accepts `--exercise --fresh-fixture` for a driver
+with publication identity support. The probe dispatches the production
+`CreateExport` request for each direction, waits for both unbound exports to
+become Present with their admission gates closed, then joins that service.
+It saves the returned IDs in the usual stereo fixture and starts the actual
+test from the restored project in a new control session. Apply must confirm
+both saved IDs under a different native session epoch. The original overall
+timeout covers both sessions. Choose an unused output directory for each run.
+
+The default fixture and the explicitly seeded rename fixture still exercise
+saved IDs. Those modes need a valid committed record or adoptable history for
+each ID. The fresh mode is also available for the bounded PCM, rename and soak
+tests and is exclusive with `--rename-fixture-seed`.
+
 ## Verification and limits
 
 Evidence root:

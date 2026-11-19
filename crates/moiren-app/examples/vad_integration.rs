@@ -37,6 +37,7 @@ mod native;
 mod target;
 
 const HELP: &str = "vad_integration --exercise [--pcm | --rename | --rename-streaming] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+    [--fresh-fixture (only --exercise, excludes --rename-fixture-seed)]\n\
     [--rename-fixture-seed=POSITIVE_U64 (only --exercise --rename)]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
@@ -48,8 +49,11 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename | --rename-stre
     empty means unknown, not silence. Raw capture is not waveform qualification.\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
     production service startup/discovery, Apply with no probe native clients,\n\
-    Stop with closed gates and retained endpoints, then service exit/join.\n\
+    then service exit/join with closed gates.\n\
     Stage1 does NOT validate PCM or final PDO disappearance.\n\
+    --fresh-fixture first uses App CreateExport for two new endpoints and joins\n\
+    that service. It saves the returned IDs and starts the test from the restored\n\
+    project in a new owner. This uses the existing overall timeout.\n\
     Stage2 --pcm: hold 4s with no probe native clients, check actual Engine signal\n\
     frame_end progress beyond 3s; exact-root/stable-ID WASAPI exclusive Float32\n\
     clients verify stereo [.25,-.5] -> Gain .5 -> [.125,-.25], then a distinct\n\
