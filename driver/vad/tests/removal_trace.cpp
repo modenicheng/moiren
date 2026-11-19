@@ -69,7 +69,7 @@ static void ActualCollectionAndPassiveExport()
     auto& d = shared.RemovalDiagnostics[3]; d.Reset(21, 99);
     TraceLock = &shared.Lock;
     VadRecordRemoval(&child, vad::RemovalStage::RemoveEnter, false, 0, false);
-    VadRecordRemoval(&child, vad::RemovalStage::RemoveReturn, true, 0, true);
+    RecordRemoval(&shared, 3, 21, vad::RemovalStage::RemoveReturn, true, 0, true);
     VadAudioRecordRelease(&child, false, 0, false);
     VadAudioRecordRelease(&child, true, -37, true);
     CurrentIrql = DISPATCH_LEVEL;
@@ -103,7 +103,8 @@ static void ActualCollectionAndPassiveExport()
     Check(Traces.size() == count, "unchanged QUERY never emits the same pending stages twice");
     ++slot.Id;
     VadAudioRecordRelease(&child, true, -91, true);
-    Check(d.Sequence == 6, "stale child cannot append evidence after slot reuse");
+    RecordRemoval(&shared, 3, 21, vad::RemovalStage::RemoveReturn, true, 0, true);
+    Check(d.Sequence == 6, "a stale child or saved identity cannot append after slot reuse");
     d.Record(21, 99, vad::RemovalStage::Destroy, 200);
     d.Reset(slot.Id, slot.Session);
     Traces.clear();

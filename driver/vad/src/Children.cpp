@@ -163,8 +163,10 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
             // in PrepareHardware, before AcxDeviceAddCircuit exposes audio.
             status = AcxDeviceAddCircuitDevice(device, child);
             if (NT_SUCCESS(status)) {
-                InterlockedExchange(&context->CircuitDeviceAdded, 1);
                 KeAcquireSpinLock(&shared->Lock, &irql);
+                if (shared->Children[index] == child) {
+                    InterlockedExchange(&context->CircuitDeviceAdded, 1);
+                }
                 *snapshot = vad::Snapshot(shared->Slots[index]);
                 KeReleaseSpinLock(&shared->Lock, irql);
                 VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
@@ -190,24 +192,30 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
     return status;
 }
 
-void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
-    bool hasStatus, NTSTATUS status, bool nativeCall)
+static void RecordRemoval(VAD_SHARED* shared, ULONG index, uint64_t id,
+    vad::RemovalStage stage, bool hasStatus, NTSTATUS status, bool nativeCall)
 {
-    auto context = VadChild(child);
-    auto shared = context->Shared;
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
-    const auto& slot = shared->Slots[context->Index];
-    if (slot.Id == context->Id) {
+    const auto& slot = shared->Slots[index];
+    if (slot.Id == id) {
         LARGE_INTEGER frequency;
         const auto qpc = KeQueryPerformanceCounter(&frequency);
-        auto& diagnostic = shared->RemovalDiagnostics[context->Index];
+        auto& diagnostic = shared->RemovalDiagnostics[index];
         diagnostic.Frequency = static_cast<uint64_t>(frequency.QuadPart);
         diagnostic.Record(slot.Id, slot.Session, stage,
             static_cast<uint64_t>(qpc.QuadPart), hasStatus,
             static_cast<uint32_t>(status), nativeCall);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
+    bool hasStatus, NTSTATUS status, bool nativeCall)
+{
+    auto context = VadChild(child);
+    RecordRemoval(context->Shared, context->Index, context->Id,
+        stage, hasStatus, status, nativeCall);
 }
 
 void VadAudioRecordRelease(WDFDEVICE child, bool returned, NTSTATUS status, bool nativeCall)
@@ -219,15 +227,28 @@ void VadAudioRecordRelease(WDFDEVICE child, bool returned, NTSTATUS status, bool
 static NTSTATUS MarkMissing(WDFDEVICE device, WDFDEVICE child)
 {
     auto context = VadChild(child);
-    VadRecordRemoval(child, vad::RemovalStage::RemoveEnter);
+    auto shared = context->Shared;
+    const auto index = context->Index;
+    const auto id = context->Id;
+    RecordRemoval(shared, index, id, vad::RemovalStage::RemoveEnter,
+        false, STATUS_SUCCESS, false);
     if (InterlockedCompareExchange(&context->CircuitDeviceAdded, 0, 0) == 0) {
-        VadRecordRemoval(child, vad::RemovalStage::RemoveReturn, true, STATUS_SUCCESS, false);
+        RecordRemoval(shared, index, id, vad::RemovalStage::RemoveReturn,
+            true, STATUS_SUCCESS, false);
         return STATUS_SUCCESS;
     }
     NTSTATUS status = AcxDeviceRemoveCircuitDevice(device, child);
-    VadRecordRemoval(child, vad::RemovalStage::RemoveReturn, true, status, true);
+    // Cleanup can run before ACX returns. The caller's temporary reference
+    // prevents final destroy, so the shared slot still owns this diagnostic.
+    RecordRemoval(shared, index, id, vad::RemovalStage::RemoveReturn, true, status, true);
     if (NT_SUCCESS(status)) {
-        InterlockedExchange(&context->CircuitDeviceAdded, 0);
+        KIRQL irql;
+        KeAcquireSpinLock(&shared->Lock, &irql);
+        // Cleanup clears the publication flag and table entry together.
+        if (shared->Children[index] == child) {
+            InterlockedExchange(&context->CircuitDeviceAdded, 0);
+        }
+        KeReleaseSpinLock(&shared->Lock, irql);
     }
     if (!NT_SUCCESS(status)) {
         // Admission stays revoked on failure. A later REMOVE or owner-open
@@ -330,6 +351,7 @@ void VadChildCleanup(WDFOBJECT object)
         slot.AudioReady = 0;
         slot.State = MOIREN_VAD_STATE_REMOVING;
         referenced = shared->Children[context->Index] != nullptr;
+        InterlockedExchange(&context->CircuitDeviceAdded, 0);
         shared->Children[context->Index] = nullptr;
     }
     KeReleaseSpinLock(&shared->Lock, irql);

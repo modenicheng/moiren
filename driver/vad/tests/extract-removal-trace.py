@@ -13,7 +13,7 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 parts = []
 for relative, functions in (
-    ('src/Children.cpp', ('VadRecordRemoval', 'VadAudioRecordRelease')),
+    ('src/Children.cpp', ('RecordRemoval', 'VadRecordRemoval', 'VadAudioRecordRelease')),
     ('src/Control.cpp', ('TracePendingRemovalDiagnostic',)),
 ):
     source = root / relative

@@ -32,6 +32,13 @@ at PASSIVE_LEVEL outside the lock. Disabled tracing does not drain evidence;
 Destroy never enters WPP/pageable code. Each fragment repeats runtime/session;
 a single export has at most25fragments, including a possible overwrite notice.
 
+The 2026-11-19 follow-up captures the shared slot and runtime ID before
+`AcxDeviceRemoveCircuitDevice`. If PDO Cleanup runs before the call returns,
+the return record uses that saved identity. The temporary reference keeps the
+slot alive until final Destroy. Cleanup clears the publication flag with the
+table entry, and the ACX return path updates the flag only for a still-published
+child. See the [WDF Cleanup callback contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdfobject/nc-wdfobject-evt_wdf_object_context_cleanup).
+
 CREATE may reuse a destroyed slot before a later QUERY. Independent review
 found that an initial reset silently erased pending old evidence; a new test
 reproduced that failure. Reset now retains explicit cumulative lost-lifetime

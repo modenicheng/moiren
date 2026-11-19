@@ -84,12 +84,23 @@ struct RemovalRecord {
     bool NativeCall;
 };
 static std::vector<RemovalRecord> RemovalRecords;
+static void RecordRemoval(State* shared, ULONG index, uint64_t id, vad::RemovalStage stage,
+    bool hasStatus, NTSTATUS status, bool nativeCall)
+{
+    Check(!shared->Lock.Held && shared->Slots[index].Id == id,
+        "scalar diagnostics use the original slot without holding State");
+    RemovalRecords.push_back({id, stage, hasStatus, status, nativeCall});
+}
+
 void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
     bool hasStatus = false, NTSTATUS status = 0, bool nativeCall = false)
 {
     Check(!child->Destroyed && !child->Shared->Lock.Held,
         "real removal call sites collect only while context is live and shared lock is free");
-    RemovalRecords.push_back({child->Context.Id, stage, hasStatus, status, nativeCall});
+    Check(child->PolicyReleases == 0 || stage == vad::RemovalStage::Destroy,
+        "only the destroy callback may look up the WDF context after cleanup");
+    RecordRemoval(child->Shared, child->Context.Index, child->Context.Id,
+        stage, hasStatus, status, nativeCall);
 }
 Device* VadRoot(Device* device) { return device; }
 ChildContext* VadChild(Device* child)
@@ -347,6 +358,15 @@ static void CleanupInsideAcxKeepsTemporaryReferenceUntilReturn()
         fixture.Child.DereferenceCalls == 3 && fixture.Shared.SharedReleases == 1 &&
         vad::Reusable(fixture.Shared.Slots[TestIndex]),
         "MarkMissing and temporary release finish before exact-once final destruction");
+    Check(RemovalRecords.size() == 4 &&
+        RemovalRecords[0].Stage == vad::RemovalStage::RemoveEnter &&
+        RemovalRecords[1].Stage == vad::RemovalStage::Cleanup &&
+        RemovalRecords[2].Stage == vad::RemovalStage::RemoveReturn &&
+        RemovalRecords[2].Runtime == snapshot.EndpointId &&
+        RemovalRecords[2].HasStatus && RemovalRecords[2].NativeCall &&
+        RemovalRecords[2].Status == STATUS_SUCCESS &&
+        RemovalRecords[3].Stage == vad::RemovalStage::Destroy,
+        "ACX return keeps the original runtime and status even after cleanup");
 }
 
 static void ForeignSessionAndUnknownIdsCannotRemove()
