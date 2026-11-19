@@ -112,6 +112,8 @@ microphone stereo raw PDOs sequentially. Each case performs CREATE, QUERY,
 SET_GATE(false), REMOVE, and QUERY polling until Removed before starting the next
 case. One hundred rounds performs 400 sequential lifecycles per discovered root,
 not 400 concurrent PDOs. Tokens observed within a session must not be reused.
+The shared removal helper requires a matching QUERY before the original
+deadline even if the REMOVE reply already reports Removed.
 No interfaces is a diagnostic result in the default mode and an error in
 exercise mode. Invalid, repeated, or unsupported arguments fail before discovery;
 `--rounds` requires `--exercise` and accepts `1..=10000`.

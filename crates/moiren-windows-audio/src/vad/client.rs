@@ -413,24 +413,21 @@ impl ControlClient {
         Ok(snapshot)
     }
 
+    /// Send REMOVE and confirm the same endpoint through QUERY within one deadline.
     pub fn remove_and_wait(
         &mut self,
         key: EndpointKey,
         timeout: Duration,
     ) -> Result<EndpointSnapshot, ClientError> {
         let deadline = deadline_after(timeout)?;
-        let mut previous = self.remove_at(key, deadline)?;
-        loop {
-            if previous.removal_complete_after(previous)? {
-                return Ok(previous);
-            }
-            poll_delay(deadline)?;
-            let current = self.query_at(key, deadline)?;
-            if current.removal_complete_after(previous)? {
-                return Ok(current);
-            }
-            previous = current;
-        }
+        let previous = self.remove_at(key, deadline)?;
+        wait_removed(
+            previous,
+            deadline,
+            Instant::now,
+            |key| self.query_at(key, deadline),
+            std::thread::sleep,
+        )
     }
 
     /// Control/IO-owner side only: allocates four fixed slots and events.
@@ -555,12 +552,39 @@ fn finish_close(
 }
 
 fn poll_delay(deadline: Instant) -> Result<(), ClientError> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or(ClientError::DeadlineExceeded)?;
-    std::thread::sleep(remaining.min(POLL_INTERVAL));
+    std::thread::sleep(remaining_before(deadline, Instant::now())?.min(POLL_INTERVAL));
     Ok(())
+}
+
+fn remaining_before(deadline: Instant, now: Instant) -> Result<Duration, ClientError> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|duration| !duration.is_zero())
+        .ok_or(ClientError::DeadlineExceeded)
+}
+
+fn wait_removed(
+    mut previous: EndpointSnapshot,
+    deadline: Instant,
+    now: impl Fn() -> Instant,
+    mut query: impl FnMut(EndpointKey) -> Result<EndpointSnapshot, ClientError>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<EndpointSnapshot, ClientError> {
+    loop {
+        let remaining = remaining_before(deadline, now())?;
+        // A terminal REMOVE reply still needs a QUERY. If retirement is
+        // pending, give PnP time to advance before polling.
+        if previous.state() != PdoState::Removed {
+            sleep(remaining.min(POLL_INTERVAL));
+            remaining_before(deadline, now())?;
+        }
+        let current = query(previous.key())?;
+        remaining_before(deadline, now())?;
+        if current.removal_complete_after(previous)? {
+            return Ok(current);
+        }
+        previous = current;
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +600,17 @@ mod tests {
     }
 
     fn gate_snapshot_for(
+        session: u64,
+        token: u64,
+        stream: u64,
+        gate: u64,
+        open: bool,
+    ) -> EndpointSnapshot {
+        endpoint_snapshot(PdoState::Present, session, token, stream, gate, open)
+    }
+
+    fn endpoint_snapshot(
+        state: PdoState,
         session: u64,
         token: u64,
         stream: u64,
@@ -603,12 +638,12 @@ mod tests {
         for (offset, value) in [
             (0, 128_u32),
             (4, 2),
-            (16, PdoState::Present as u32),
+            (16, state as u32),
             (20, Intent::Microphone as u32),
             (24, 2),
             (28, u32::from(open)),
             (32, 1),
-            (36, 1),
+            (36, u32::from(state == PdoState::Present)),
             (88, 2),
             (92, 480),
             (100, 2),
@@ -625,6 +660,96 @@ mod tests {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         EndpointSnapshot::decode(&bytes, Capabilities::decode(&caps).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn removal_requires_a_direct_query_even_after_terminal_remove_reply() {
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let mut queries = 0;
+        let result = wait_removed(
+            removed,
+            start + Duration::from_secs(15),
+            || start,
+            |key| {
+                assert_eq!(key, removed.key());
+                queries += 1;
+                Ok(removed)
+            },
+            |_| panic!("terminal acknowledgement needs no polling delay"),
+        );
+        assert_eq!(result.unwrap(), removed);
+        assert_eq!(queries, 1);
+    }
+
+    #[test]
+    fn removal_refuses_other_lifetimes_and_state_regressions() {
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(15);
+        for unrelated in [
+            endpoint_snapshot(PdoState::Removed, 8, 11, 3, 5, false),
+            endpoint_snapshot(PdoState::Removed, 7, 12, 3, 5, false),
+            endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false),
+        ] {
+            let result = wait_removed(
+                removed,
+                deadline,
+                || start,
+                |_| Ok(unrelated),
+                |_| panic!("terminal acknowledgement needs no polling delay"),
+            );
+            assert!(matches!(result, Err(ClientError::Protocol(_))));
+        }
+        assert!(matches!(
+            wait_removed(
+                removed,
+                deadline,
+                || deadline,
+                |_| panic!("no expired query"),
+                |_| panic!("no expired sleep")
+            ),
+            Err(ClientError::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn removal_rejects_terminal_query_at_the_deadline() {
+        let removing = endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false);
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(15);
+        let clock = std::cell::Cell::new(start);
+        let result = wait_removed(
+            removing,
+            deadline,
+            || clock.get(),
+            |_| {
+                clock.set(deadline);
+                Ok(removed)
+            },
+            |pause| clock.set(clock.get() + pause),
+        );
+        assert!(matches!(result, Err(ClientError::DeadlineExceeded)));
+    }
+
+    #[test]
+    fn removal_never_dispatches_a_query_after_the_final_sleep() {
+        let removing = endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let remaining = Duration::from_millis(8);
+        let clock = std::cell::Cell::new(start);
+        let result = wait_removed(
+            removing,
+            start + remaining,
+            || clock.get(),
+            |_| panic!("QUERY must not start at the expired deadline"),
+            |pause| {
+                assert_eq!(pause, remaining);
+                clock.set(start + pause);
+            },
+        );
+        assert!(matches!(result, Err(ClientError::DeadlineExceeded)));
     }
 
     fn revision_mismatch() -> ClientError {
