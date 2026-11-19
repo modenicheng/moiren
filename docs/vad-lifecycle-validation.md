@@ -114,6 +114,9 @@ case. One hundred rounds performs 400 sequential lifecycles per discovered root,
 not 400 concurrent PDOs. Tokens observed within a session must not be reused.
 The shared removal helper requires a matching QUERY before the original
 deadline even if the REMOVE reply already reports Removed.
+The active-client probe starts its 15-second confirmation window after dropping
+the original WASAPI client. Even when the held-phase snapshot shows Removed,
+recreation requires a matching QUERY during that window.
 No interfaces is a diagnostic result in the default mode and an error in
 exercise mode. Invalid, repeated, or unsupported arguments fail before discovery;
 `--rounds` requires `--exercise` and accepts `1..=10000`.

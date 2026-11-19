@@ -421,6 +421,26 @@ impl ControlClient {
     ) -> Result<EndpointSnapshot, ClientError> {
         let deadline = deadline_after(timeout)?;
         let previous = self.remove_at(key, deadline)?;
+        self.confirm_removed_at(previous, deadline)
+    }
+
+    /// Confirm an already retiring endpoint through QUERY within the given timeout.
+    ///
+    /// Takes the latest snapshot of that retirement. Use this after releasing a
+    /// held native client when REMOVE was submitted while the client was active.
+    pub fn confirm_removed(
+        &mut self,
+        previous: EndpointSnapshot,
+        timeout: Duration,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.confirm_removed_at(previous, deadline_after(timeout)?)
+    }
+
+    fn confirm_removed_at(
+        &mut self,
+        previous: EndpointSnapshot,
+        deadline: Instant,
+    ) -> Result<EndpointSnapshot, ClientError> {
         wait_removed(
             previous,
             deadline,
@@ -570,6 +590,7 @@ fn wait_removed(
     mut query: impl FnMut(EndpointKey) -> Result<EndpointSnapshot, ClientError>,
     mut sleep: impl FnMut(Duration),
 ) -> Result<EndpointSnapshot, ClientError> {
+    previous.removal_complete_after(previous)?;
     loop {
         let remaining = remaining_before(deadline, now())?;
         // A terminal REMOVE reply still needs a QUERY. If retirement is
@@ -680,6 +701,26 @@ mod tests {
         );
         assert_eq!(result.unwrap(), removed);
         assert_eq!(queries, 1);
+    }
+
+    #[test]
+    fn removal_confirmation_requires_a_prior_retiring_snapshot() {
+        let present = endpoint_snapshot(PdoState::Present, 7, 11, 3, 5, false);
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let mut queries = 0;
+        let result = wait_removed(
+            present,
+            start + Duration::from_secs(15),
+            || start,
+            |_| {
+                queries += 1;
+                Ok(removed)
+            },
+            |_| {},
+        );
+        assert!(matches!(result, Err(ClientError::Protocol(_))));
+        assert_eq!(queries, 0);
     }
 
     #[test]
