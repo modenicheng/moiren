@@ -124,8 +124,14 @@ function Start-RemovalDiagnosticController {
  if($global:EncodingFixtureError){throw $global:EncodingExpectedError}
 }
 function Add-RemovalControllerError {}
+$script:EncodingObservationCount=0
 function Observe-RemovalDiagnosticController {
- [pscustomobject]@{Completed=$true;Safe=$false;NeedsObservation=$false;Qualified=$false}
+ $script:EncodingObservationCount++
+ $pending=$global:EncodingFixturePending -and $script:EncodingObservationCount -le 3
+ $errors=@()
+ if($pending){$errors=@($global:EncodingExpectedError)}
+ [pscustomobject]@{Completed=(-not $pending);Safe=$false;NeedsObservation=$pending;Qualified=$false
+  Phase='PendingManaged';Errors=$errors}
 }
 '@
 Save-EncodingAscii (Join-Path $root 'closed-export.ps1') @'
@@ -141,6 +147,7 @@ $ErrorActionPreference='Stop'
 Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 [Console]::OutputEncoding=[Text.Encoding]::GetEncoding($CodePage)
 $global:EncodingFixtureError=($ErrorMode-eq1)
+$global:EncodingFixturePending=($ErrorMode-eq2)
 $global:EncodingExpectedError=([string][char]0x9519)+[char]0x8bef+' '+([string][char]0x4e2d)+[char]0x6587
 & $Entry -RunDirectory $Run -ManifestPath ($Run+'.manifest.json') -ManifestSha256 ('A'*64) -UserRebootConfirmed
 exit $LASTEXITCODE
@@ -148,9 +155,9 @@ exit $LASTEXITCODE
 $encodingChecks=New-Object Collections.Generic.List[object]
 $owners=New-Object Collections.Generic.List[object]
 $unicode=([string][char]0x4e2d)+[char]0x6587
-$expectedError='Removal diagnostic failed/unknown: '+([string][char]0x9519)+[char]0x8bef+' '+$unicode
+$expectedError=([string][char]0x9519)+[char]0x8bef+' '+$unicode
 foreach($codePage in @(437,936)){
- foreach($errorMode in @(0,1)){
+ foreach($errorMode in @(0,1,2)){
   $run=Join-Path $root ('run-'+$codePage+'-'+$errorMode+'-'+$unicode)
   $owner=Start-FiniteTool -Executable $engine -ExpectedSha256 $enginePin -OutputDirectory (Join-Path $root ('output-'+$codePage+'-'+$errorMode)) `
    -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-File',$wrapper,'-Entry',$entry,'-Run',$run,
@@ -169,7 +176,11 @@ foreach($codePage in @(437,936)){
   }catch{$stdoutUtf8=$false}
   try{
    $message=[Text.UTF8Encoding]::new($false,$true).GetString($stderr)
-   $stderrExact=if($errorMode-eq1){$message.TrimEnd([char]13,[char]10)-ceq$expectedError}else{$stderr.Length-eq0}
+   $stderrExact=switch($errorMode){
+    1 {$message.TrimEnd([char]13,[char]10)-ceq('Removal diagnostic failed/unknown: '+$expectedError)}
+    2 {$message.TrimEnd([char]13,[char]10)-ceq('Removal diagnostic pending (PendingManaged): '+$expectedError)}
+    default {$stderr.Length-eq0}
+   }
   }catch{$stderrUtf8=$false}
   $passed=($receipt.ExitCode-eq1-and-not$receipt.TimedOut-and$receipt.OutputStable-and$stdoutExact-and$stderrExact)
   $encodingChecks.Add([ordered]@{name=('entry-utf8-codepage-'+$codePage+'-error-'+$errorMode);CodePage=$codePage;ErrorMode=$errorMode;passed=$passed;ExitCode=$receipt.ExitCode

@@ -271,9 +271,17 @@ function Save-RemovalControllerResult($Owner) {
 }
 
 function Get-RemovalControllerResult($Owner) {
-    [pscustomobject]@{Completed=$Owner.Completed;Refused=$Owner.Refused;Safe=$Owner.Safe;NeedsObservation=(-not$Owner.Completed -and -not$Owner.Refused)
+    $needsObservation=-not $Owner.Completed -and -not $Owner.Refused
+    $errors=@($Owner.Errors.ToArray())
+    # Surface managed refusals in live observations without changing which
+    # original owners can be observed or when the controller can close.
+    if($needsObservation -and $null -ne $Owner.RetainedManaged -and $errors.Count -lt 16){
+        $managedError=$Owner.RetainedManaged.Error
+        if($managedError -and $managedError -cnotin $errors){$errors+=,$managedError}
+    }
+    [pscustomobject]@{Completed=$Owner.Completed;Refused=$Owner.Refused;Safe=$Owner.Safe;NeedsObservation=$needsObservation
         NativePassed=$false;Qualified=$false;Phase=$Owner.Phase;ReceiptPin=$Owner.ResultPin
-        Errors=@($Owner.Errors.ToArray());TimedOut=$Owner.TimedOut}
+        Errors=$errors;TimedOut=$Owner.TimedOut}
 }
 
 function Observe-RemovalDiagnosticController {

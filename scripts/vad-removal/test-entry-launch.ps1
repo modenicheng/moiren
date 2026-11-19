@@ -84,6 +84,20 @@ Case 'exit-zero-without-ack-persists-terminal-but-cannot-deliver' {
     $f=New-Fixture '[Console]::Write("no closed ack");exit 0';$r=Read-Terminal $f (Invoke-Fixture $f)
     Check ($r.ExitCode-eq0-and$r.OutputStable-and$null-eq$r.LocalAcknowledgementPin-and$r.Errors.Count-gt0) 'Missing ack accepted.'
 }
+Case 'short-stderr-is-readable-before-original-child-exits' {
+    $f=New-Fixture @'
+[Console]::Error.WriteLine('pending evidence')
+$timer=[Diagnostics.Stopwatch]::StartNew()
+do {
+    $text=Get-Content -LiteralPath ($RunDirectory+'.entry-stderr.log') -Raw
+    if($text -ceq ('pending evidence'+[Environment]::NewLine)){exit 1}
+    Start-Sleep -Milliseconds 30
+} while($timer.ElapsedMilliseconds -lt 5000)
+exit 42
+'@
+    $r=Read-Terminal $f (Invoke-Fixture $f)
+    Check ($r.ExitCode -eq 1 -and $r.OutputStable) 'Short stderr was hidden until the child exited.'
+}
 Case 'shared-one-mib-cap-drains-original-child-to-natural-exit' {
     $f=New-Fixture '$s="x"*8192;for($i=0;$i-lt160;$i++){[Console]::Out.Write($s);[Console]::Error.Write($s)};[IO.File]::WriteAllText(($RunDirectory+".natural"),[string]$PID);exit 1'
     $r=Read-Terminal $f (Invoke-Fixture $f)

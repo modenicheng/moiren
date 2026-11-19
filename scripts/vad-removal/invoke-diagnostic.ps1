@@ -25,9 +25,18 @@ try {
     $controller=New-RemovalDiagnosticController -RunDirectory $RunDirectory -Inputs $inputs `
         -UserRebootConfirmed -WorkerSessionId $WorkerSessionId
     Start-RemovalDiagnosticController $controller
+    $reportedPendingError=$false
     do {
         $r=Observe-RemovalDiagnosticController $controller -ObservationMilliseconds 250
-        if($r.NeedsObservation){Start-Sleep -Milliseconds 100}
+        if($r.NeedsObservation){
+            # The entry may retain an original owner indefinitely. Emit the
+            # first recorded failure once without waiting for a terminal result.
+            if(-not $reportedPendingError -and $r.Errors.Count -gt 0){
+                $reportedPendingError=$true
+                [Console]::Error.WriteLine(('Removal diagnostic pending ({0}): {1}' -f $r.Phase,$r.Errors[0]))
+            }
+            Start-Sleep -Milliseconds 100
+        }
     } while($r.NeedsObservation)
     $result=$r
     if($r.Completed -and $r.Safe){$exitCode=0}

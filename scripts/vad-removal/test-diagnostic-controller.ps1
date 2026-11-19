@@ -120,6 +120,7 @@ function Start-RemovalTaskOnce($Owner){
 }
 function Observe-RemovalManagedSession($Session){
  Event 'managed-observe'
+ if($script:f.ManagedError){$Session.Error=$script:f.ManagedError}
  if($script:f.ManagedPending){return @{Terminal=$false;NeedsObservation=$true}}
  if($null-eq$Session.ProbeOwner){$Session.ProbeOwner=[pscustomobject]@{AdmissionAttempted=$true;AdmissionWritten=$true}}
  $Session.Terminal=@{Terminal=$true;NeedsObservation=$false}
@@ -170,7 +171,7 @@ function Fixture {
  $script:f=[pscustomobject]@{Events=(New-Object Collections.Generic.List[string]);BeforePending=$false;BeforeFailed=$false
   InputsChanged=$false;LeaseRefused=$false;TraceEnableFails=$false;TraceStartFailure=$false;TraceStartUnknown=$false
   RegisterRefused=$false;RegisterUnknown=$false;RunUnknown=$false;RunUnknownInstanceKnown=$false;RunInvalidReturn=$false;BeforeRunRefused=$false
-  ManagedPending=$false;FinishPending=$false;StopPending=$false;AfterPending=$false;AfterUnsafe=$false;AfterSaveFails=$false;RetirementUnknown=$false}
+  ManagedPending=$false;ManagedError=$null;FinishPending=$false;StopPending=$false;AfterPending=$false;AfterUnsafe=$false;AfterSaveFails=$false;RetirementUnknown=$false}
  $inputs=[pscustomobject]@{SourceDirectory=$PSScriptRoot;ManifestPin=@{Path='C:\fixture\manifest.json';Bytes=2;Sha256='A'*64}
   Pins=@{Tools=@{};Probe=@{File=@{Path='C:\fixture\e2e_latency_probe.exe';Sha256='B'*64}}}}
  New-RemovalDiagnosticController -RunDirectory (Join-Path $root ([Guid]::NewGuid().ToString('N'))) -Inputs $inputs -UserRebootConfirmed
@@ -231,6 +232,14 @@ Case 'unknown-runex-drains-original-session-and-never-reruns' {
  for($i=0;$i-lt3;$i++){$r=Observe-RemovalDiagnosticController $o}
  Check ($r.NeedsObservation-and$o.Lease.Owned-and$o.ManagedSession.Error-and($f.Events-contains'managed-observe')) 'Bound unknown RunEx lost retained worker observation.'
  Check (@($f.Events|Where-Object{$_-ceq'task-run'}).Count-eq1-and-not($f.Events-contains'lease-release')) 'RunEx retried or unresolved owner released.'
+}
+Case 'pending-managed-failure-is-reported-without-changing-owner-state' {
+ $o=Fixture;$f.ManagedPending=$true;$f.ManagedError='Managed fixture admission refused'
+ Start-RemovalDiagnosticController $o
+ $r=Observe-RemovalDiagnosticController $o
+ Check ($r.NeedsObservation -and $r.Phase -ceq 'Managed') 'Original session stopped being observable.'
+ Check ($r.Errors.Count -eq 1 -and $r.Errors[0] -ceq $f.ManagedError) 'Pending managed error was hidden.'
+ Check ($o.Errors.Count -eq 0 -and $o.Lease.Owned) 'Live diagnostics changed controller ownership.'
 }
 Case 'known-never-run-runex-failure-retires-task-and-releases-controller' {
  $o=Fixture;$f.RunUnknown=$true;$f.RunInvalidReturn=$true;Start-RemovalDiagnosticController $o;$r=Settle $o

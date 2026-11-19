@@ -234,7 +234,10 @@ function Invoke-RemovalDiagnosticEntry {
             Target='moiren-lan';RunDirectory=$RunDirectory;ManifestPin=$manifest.Pin;EntrySourcePin=$self.Pin;ChildSourcePin=$child.Pin
             PowerShellPin=$shell.Pin;Arguments=@($argv);WorkerSessionId=$WorkerSessionId;DeadlineSeconds=600
             NativePassed=$false;Qualified=$false})
-        foreach($path in $paths[0..1]){$files.Add([IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read))}
+        $files.Add([IO.File]::Open($paths[0],[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read))
+        # Disable stderr's user-space buffer so short diagnostics are visible
+        # while the original child is still running.
+        $files.Add([IO.FileStream]::new($paths[1],[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read,1))
         # Publish the exact Process and writable files before Process.Start; even
         # a throwing/ambiguous launch keeps this owner rather than starting again.
         $script:RemovalDiagnosticEntryOwners.Add($owner)
