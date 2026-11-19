@@ -311,9 +311,15 @@ _version: 2
 "Playback":
   en: Playback
   zh-CN: 播放
-"No virtual devices yet. Create one above; it starts unbound.":
-  en: No virtual devices yet. Create one above; it starts unbound.
-  zh-CN: 还没有虚拟设备。在上方创建一个；初始为未绑定状态。
+"No virtual devices yet":
+  en: No virtual devices yet
+  zh-CN: 还没有虚拟设备
+"Create one above; it starts unbound.":
+  en: Create one above; it starts unbound.
+  zh-CN: 在上方创建一个；初始为未绑定状态。
+"Type":
+  en: Type
+  zh-CN: 类型
 "Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.":
   en: "Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first."
   zh-CN: 更改声道、名称或默认资格会安全地退役并重建端点；请先在 Graph 的 IO 节点上清除或更改绑定。

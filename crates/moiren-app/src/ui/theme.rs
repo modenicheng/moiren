@@ -76,6 +76,10 @@ pub const NODE_WIDTH: f32 = 270.;
 pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
 pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
 pub const CANVAS_GRID: f32 = 24.;
+/// The reading measure of content pages' centered column (settings groups,
+/// the devices page's lists). Workstation surfaces that browse documents of
+/// cards share one measure instead of drifting apart per page.
+pub const READING_COLUMN: f32 = 680.;
 
 // --- Chrome and window geometry (design 21 §1.3) ---------------------------
 /// The bottom status bar's height, shared by the chrome host and the bar

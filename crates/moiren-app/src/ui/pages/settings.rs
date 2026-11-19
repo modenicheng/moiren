@@ -19,8 +19,10 @@ mod model;
 mod model_tests;
 mod persistence;
 mod transaction;
-use fields::{choices, pref_choices, rate_title, row, row_with_note, rows, select_trigger};
-pub(crate) use fields::{footer, stream_editor};
+use fields::{choices, pref_choices, rate_title, row_with_note, rows, select_trigger};
+// `row` rides the pub(crate) re-export below: the devices page's creation
+// card speaks the same row language.
+pub(crate) use fields::{footer, row, stream_editor};
 use menu::ValueField;
 pub(crate) use menu::{ValueMenu, menu_overlay};
 pub(crate) use model::{
@@ -312,8 +314,9 @@ pub(crate) fn page(shell: &StudioShell, _window: &Window, cx: &Context<StudioShe
         .into_any_element()
 }
 
-/// The reading measure of the settings content column.
-const COLUMN_WIDTH: f32 = 680.;
+/// The reading measure of the settings content column, shared with the
+/// other card-browsing pages through the theme token.
+const COLUMN_WIDTH: f32 = theme::READING_COLUMN;
 
 /// A group card's title: one step under the section heading so the card
 /// reads as a unit, not a second page.

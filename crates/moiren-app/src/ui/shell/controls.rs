@@ -50,6 +50,89 @@ pub(crate) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
         )
 }
 
+/// A [`detail`] row whose value renders in the mono readout face: stream
+/// parameters and clock counters are numbers that update live, and the mono
+/// face keeps the digits from drifting sideways as they change.
+pub(crate) fn detail_mono(key: &str, value: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .py(px(theme::SPACE_1_5))
+        .child(label(key.to_string()))
+        .child(
+            div()
+                .min_w_0()
+                .flex_1()
+                .font_family(theme::FONT_MONO)
+                .text_size(px(theme::TEXT_CAPTION))
+                .text_color(theme::TEXT)
+                .child(value.into()),
+        )
+}
+
+/// A 1px horizontal rule separating an inspector panel's sections.
+pub(crate) fn hairline() -> Div {
+    div()
+        .w_full()
+        .flex_none()
+        .h(px(theme::HAIRLINE_W))
+        .bg(theme::HAIRLINE)
+}
+
+/// The shared empty-state geometry (design 24 §4): the icon tile's edge and
+/// the glyph inside it. One source for the helper and the graph inspector's
+/// empty selection, which is the same block.
+pub(crate) const EMPTY_TILE: f32 = 64.;
+pub(crate) const EMPTY_ICON: f32 = 28.;
+
+/// A composed empty state: an icon tile over an optional title and one
+/// sentence, centered in whatever box the caller gives it. The graph
+/// inspector's empty selection established the pattern; lists and panels
+/// share it here. `flex_1` fills the caller's remaining height, so give the
+/// helper a sized parent (a scroll container's content box does when the
+/// content is shorter than the viewport).
+pub(crate) fn empty_state(
+    id: &'static str,
+    icon: &'static str,
+    title: Option<SharedString>,
+    hint: impl Into<SharedString>,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_1()
+        .min_h_0()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(theme::SPACE_2))
+        .px(px(theme::SPACE_4))
+        .child(
+            div()
+                .flex_none()
+                .w(px(EMPTY_TILE))
+                .h(px(EMPTY_TILE))
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_LG))
+                .bg(theme::controls::RAISED)
+                .child(
+                    component::Icon::default()
+                        .path(icon)
+                        .size(px(EMPTY_ICON))
+                        .text_color(theme::TEXT_FAINT),
+                ),
+        )
+        .children(title.map(|title| {
+            div()
+                .text_size(px(theme::TEXT_LG))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title)
+        }))
+        .child(label(hint))
+}
+
 /// A [`detail`] row whose value side is a click-to-type editable readout.
 pub(crate) fn detail_editable(
     key: &str,

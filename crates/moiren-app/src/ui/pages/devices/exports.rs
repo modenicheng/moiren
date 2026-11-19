@@ -170,6 +170,10 @@ impl StudioShell {
     }
 }
 
+/// The Exports tab's column: what virtual devices are and how their status
+/// reads (the page's documentation cluster), the creation card, then one
+/// card per device. Help sits with the reading, action warnings sit on the
+/// cards whose actions they qualify.
 pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<Div> {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
@@ -185,18 +189,29 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .restrict_scroll_to_axis()
         .on_scroll_wheel(notify_owner(cx.entity()))
         .child(heading(t!("Virtual devices")))
-        .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
-        .child(creation_controls(shell, cx))
-        .child(label(t!("Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device.")))
-        .child(div().id("export-default-help")
-            .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
-            .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
-            .gpui_test_observe())
-        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.")));
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(theme::SPACE_1_5))
+                .child(label(t!("Virtual speaker: other apps play into a Moiren input. Virtual microphone: a Moiren output feeds other apps. Choose this device on a Graph input/output node; each IO node belongs to one virtual device.")))
+                .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
+                .child(
+                    div()
+                        .id("export-default-help")
+                        .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
+                        .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
+                        .gpui_test_observe(),
+                ),
+        )
+        .child(creation_controls(shell, cx));
     if snapshot.exports.is_empty() {
-        list = list.child(label(t!(
-            "No virtual devices yet. Create one above; it starts unbound."
-        )));
+        list = list.child(empty_state(
+            "export-list-empty",
+            "icons/speaker.svg",
+            Some(t!("No virtual devices yet").into()),
+            t!("Create one above; it starts unbound."),
+        ));
     }
     for status in &snapshot.exports {
         list = list.child(export_row(shell, status, cx));
@@ -242,14 +257,19 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 }),
         );
     }
-    for (id, title, channels) in [
+    let mut channels = div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(theme::SPACE_1_5));
+    for (id, title, channel_count) in [
         ("export-create-mono", t!("Mono"), 1),
         ("export-create-stereo", t!("Stereo"), 2),
     ] {
         let this = cx.entity();
-        choices = choices.child(
+        channels = channels.child(
             button(id, title)
-                .variant(if shell.devices.export_controls.channels == channels {
+                .variant(if shell.devices.export_controls.channels == channel_count {
                     ButtonVariant::Primary
                 } else {
                     ButtonVariant::Secondary
@@ -257,23 +277,18 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .disabled(pending)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.devices.export_controls.channels = channels;
+                        shell.devices.export_controls.channels = channel_count;
                         cx.notify();
                     });
                 }),
         );
     }
     let this = cx.entity();
-    div()
-        .id("export-create-panel")
-        .flex()
-        .flex_col()
-        .gap(px(theme::SPACE_2))
-        .p(px(theme::SPACE_3))
-        .bg(theme::SURFACE)
-        .rounded(px(theme::RADIUS_MD))
-        .child(heading(t!("Create virtual device")))
-        .child(choices)
+    card("export-create-panel")
+        .gap(px(theme::SPACE_3))
+        .child(section_title(t!("Create virtual device")))
+        .child(settings::row(&t!("Type"), choices))
+        .child(settings::row(&t!("Channels"), channels))
         .child(label(t!(
             "Endpoint name (1-63 UTF-16 units; no control characters)"
         )))
@@ -331,17 +346,35 @@ fn export_row(
     let graph = &snapshot.graph;
     let id = status.intent.endpoint_id;
     let desired = graph.exports.iter().find(|export| export.endpoint_id == id);
-    let mut row = div()
-        .id(SharedString::from(format!("export-row-{id}")))
-        .flex()
-        .flex_col()
-        .gap(px(theme::SPACE_2))
-        .p(px(theme::SPACE_3))
-        .bg(theme::SURFACE)
-        .rounded(px(theme::RADIUS_MD))
-        .child(heading(status.intent.name.clone()))
-        .child(label(format!(
-            "{} / {} / {id}",
+    let mut row = card(SharedString::from(format!("export-row-{id}")))
+        .gap(px(theme::SPACE_3))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(heading(status.intent.name.clone()).min_w_0().truncate()),
+                )
+                .when_some(desired, |row, desired| {
+                    // Candidate configuration, not a live fact: the accent
+                    // marks "configured on" while cyan stays reserved for
+                    // the page's live-stream badges (In use / Running).
+                    row.child(if desired.enabled {
+                        badge(t!("Enabled"), theme::controls::FOCUS)
+                    } else {
+                        badge(t!("Disabled"), theme::TEXT_MUTED)
+                    })
+                }),
+        )
+        // Direction and channel shape; the endpoint's name (the field below)
+        // is the identity the rest of the system shows, so the raw endpoint
+        // id stays off the screen.
+        .child(caption(format!(
+            "{} / {}",
             t!(status.intent.direction.title()),
             if status.intent.channels == 1 {
                 t!("Mono")
@@ -349,46 +382,47 @@ fn export_row(
                 t!("Stereo")
             }
         )))
-        .child(detail(
-            &t!("Endpoint"),
-            match status.resource {
-                ExportResourceState::Unavailable => t!("Unavailable"),
-                ExportResourceState::Absent => t!("Absent"),
-                ExportResourceState::Creating => t!("Creating"),
-                ExportResourceState::Present => t!("Present (not a flow signal)"),
-                ExportResourceState::Removing => t!("Removing / awaiting confirmation"),
-            },
-        ))
-        .child(detail(
-            &t!("Gate admission"),
-            if status.gate_open {
-                t!("Open (not a flow signal)")
-            } else {
-                t!("Closed")
-            },
-        ))
-        .child(detail(
-            &t!("Engine-confirmed binding"),
-            if status.active_revision.is_some() {
-                t!("Active").to_string()
-            } else {
-                t!("Inactive").into()
-            },
-        ));
+        .child(hairline())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(detail(
+                    &t!("Endpoint"),
+                    match status.resource {
+                        ExportResourceState::Unavailable => t!("Unavailable"),
+                        ExportResourceState::Absent => t!("Absent"),
+                        ExportResourceState::Creating => t!("Creating"),
+                        ExportResourceState::Present => t!("Present (not a flow signal)"),
+                        ExportResourceState::Removing => {
+                            t!("Removing / awaiting confirmation")
+                        }
+                    },
+                ))
+                .child(detail(
+                    &t!("Gate admission"),
+                    if status.gate_open {
+                        t!("Open (not a flow signal)")
+                    } else {
+                        t!("Closed")
+                    },
+                ))
+                .child(detail(
+                    &t!("Engine-confirmed binding"),
+                    if status.active_revision.is_some() {
+                        t!("Active").to_string()
+                    } else {
+                        t!("Inactive").into()
+                    },
+                )),
+        );
     if let Some(desired) = desired {
-        row = row.child(detail(
-            &t!("Status"),
-            if desired.enabled {
-                t!("Enabled")
-            } else {
-                t!("Disabled")
-            },
-        ));
+        row = row.child(hairline());
         let mut shape = div()
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(theme::SPACE_1_5))
+            .gap(px(theme::SPACE_2))
             .child(label(t!("Channels")));
         for (key, title, channels) in [("mono", t!("Mono"), 1), ("stereo", t!("Stereo"), 2)] {
             let this = cx.entity();
@@ -410,33 +444,39 @@ fn export_row(
         row = row.child(shape);
         if let Some(draft) = shell.devices.export_controls.names.get(&id) {
             let this = cx.entity();
-            row = row
-                .child(label(t!("Endpoint name")))
-                .child(
-                    component::input::Input::new(&draft.input)
-                        .id(SharedString::from(format!("export-name-{id}")))
-                        .bg(theme::controls::RAISED)
-                        .text_color(theme::TEXT)
-                        .border_color(theme::BORDER),
-                )
-                .child(
-                    button(
-                        SharedString::from(format!("export-rename-{id}")),
-                        t!("Rename"),
+            row = row.child(label(t!("Endpoint name"))).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(theme::SPACE_2))
+                    .child(
+                        component::input::Input::new(&draft.input)
+                            .id(SharedString::from(format!("export-name-{id}")))
+                            .flex_1()
+                            .min_w_0()
+                            .bg(theme::controls::RAISED)
+                            .text_color(theme::TEXT)
+                            .border_color(theme::BORDER),
                     )
-                    .disabled(
-                        state.pending_request
-                            || draft.input.read(cx).value().as_ref() == desired.name,
-                    )
-                    .on_click(move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            if let Some(draft) = shell.devices.export_controls.names.get(&id) {
-                                let name = draft.input.read(cx).value().to_string();
-                                shell.submit_export_edit(id, IntentEdit::Rename(name), cx);
-                            }
-                        });
-                    }),
-                );
+                    .child(
+                        button(
+                            SharedString::from(format!("export-rename-{id}")),
+                            t!("Rename"),
+                        )
+                        .disabled(
+                            state.pending_request
+                                || draft.input.read(cx).value().as_ref() == desired.name,
+                        )
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| {
+                                if let Some(draft) = shell.devices.export_controls.names.get(&id) {
+                                    let name = draft.input.read(cx).value().to_string();
+                                    shell.submit_export_edit(id, IntentEdit::Rename(name), cx);
+                                }
+                            });
+                        }),
+                    ),
+            );
         }
         let enabled = !desired.enabled;
         let this = cx.entity();
@@ -475,91 +515,47 @@ fn export_row(
                     }),
                 ),
         );
-        row = row.child(users_block(snapshot, id, cx));
+        // The eligibility switch closes the control group and the warning
+        // sums the group up (channels, name, eligibility all retire the
+        // endpoint); the read-only users section follows the hairline.
         row = row.child(default_control(shell, status, cx));
+        row = row.child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; clear or change the binding on the Graph IO node first.")));
+        row = row.child(hairline());
+        let users = monitor::device_users(snapshot, &DeviceKey::Virtual(id));
+        let mut block = div()
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACE_2))
+            .child(section_title(t!("Users")));
+        if users.is_empty() {
+            block = block.child(
+                div()
+                    .id(SharedString::from(format!("export-users-empty-{id}")))
+                    .child(label(t!(
+                        "Unbound. Choose this device on a Graph input/output node."
+                    )))
+                    .gpui_test_observe(),
+            );
+        } else {
+            for user_row in user_rows(
+                snapshot,
+                &DeviceKey::Virtual(id),
+                |node| {
+                    (
+                        SharedString::from(format!("export-user-{id}-{node:?}")),
+                        SharedString::from(format!("export-reveal-{id}-{node:?}")),
+                    )
+                },
+                cx,
+            ) {
+                block = block.child(user_row);
+            }
+        }
+        row = row.child(block);
     } else {
         row = row.child(label(t!("Removed from the graph. The service retains lifecycle tracking until safe retirement is confirmed.")));
     }
     row.gpui_test_observe()
-}
-
-/// The read-only user list of a virtual device (design 23 §3.4): who the
-/// candidate graph routes through this endpoint, with a jump to the node.
-/// Binding itself lives on the node, never on this page.
-fn users_block(
-    snapshot: &crate::service::AppSnapshot,
-    id: VirtualEndpointId,
-    cx: &Context<StudioShell>,
-) -> impl IntoElement {
-    let device = DeviceKey::Virtual(id);
-    let users = monitor::device_users(snapshot, &device);
-    let timing = crate::ui::presentation::native_timing_views(snapshot);
-    let mut block = div()
-        .flex()
-        .flex_col()
-        .gap(px(theme::SPACE_1_5))
-        .child(heading(t!("Users")));
-    if users.is_empty() {
-        return block.child(
-            div()
-                .id(SharedString::from(format!("export-users-empty-{id}")))
-                .child(label(t!(
-                    "Unbound. Choose this device on a Graph input/output node."
-                )))
-                .gpui_test_observe(),
-        );
-    }
-    for user in &users {
-        let node = user.node;
-        let state_text = match user.state {
-            monitor::UserState::Running => t!("Running").to_string(),
-            monitor::UserState::NotRunning => {
-                if snapshot.phase == SessionPhase::Running {
-                    t!("Waiting to take effect").to_string()
-                } else {
-                    t!("Not running").to_string()
-                }
-            }
-            monitor::UserState::Detached => {
-                t!("Binding changed; the old stream is still running").to_string()
-            }
-        };
-        let this = cx.entity();
-        block = block
-            .child(
-                div()
-                    .id(SharedString::from(format!("export-user-{id}-{node:?}")))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(theme::SPACE_2))
-                    .child(label(user.label.clone()).min_w_0().truncate())
-                    .child(if user.state == monitor::UserState::Running {
-                        badge(state_text, theme::SIGNAL_DEVICE)
-                    } else {
-                        label(state_text)
-                    })
-                    .child(
-                        button(
-                            SharedString::from(format!("export-reveal-{id}-{node:?}")),
-                            t!("Locate in graph"),
-                        )
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |shell, cx| shell.reveal_node(node, cx));
-                        }),
-                    )
-                    .gpui_test_observe(),
-            )
-            .children(
-                timing
-                    .streams
-                    .iter()
-                    .filter(|view| view.node == node && user.state == monitor::UserState::Running)
-                    .flat_map(|view| view.rows.iter().cloned())
-                    .map(|(key, value)| detail(&key, value)),
-            );
-    }
-    block
 }
 
 fn default_control(
