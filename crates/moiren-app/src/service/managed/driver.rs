@@ -556,9 +556,15 @@ impl ManagedDriver {
             snapshot.state.execution,
         );
         // Absent endpoints surface as node faults: the stream runs silent and
-        // revives automatically when the device returns, so the badge
-        // explains the silence. Recording on the refresh cadence keeps the
-        // fault visible across fault-group clears; record_fault dedupes.
+        // the badge explains the silence. Recording on the refresh cadence
+        // keeps the fault visible across fault-group clears; record_fault
+        // dedupes. Only a plainly missing device revives automatically; a
+        // stuck open or a runtime-unplugged endpoint keeps its suppress
+        // verdict for the whole backend session (the anti-reopen-storm
+        // design, audit X12), so the narration must not promise an
+        // automatic resume for every flavor - recovery is one re-plug
+        // cycle (seen missing, then returns) or a fresh apply, which
+        // builds a fresh backend with empty verdicts.
         if let Some(observations) = &c.professional_observations {
             for stream in observations
                 .observation
@@ -576,10 +582,15 @@ impl ManagedDriver {
                     subject: super::GraphSubject::Node(stream.node),
                     cause: format!(
                         "The device for this {} is absent ('{endpoint}'); \
-                         the stream runs silent until it returns",
+                         the stream stays silent until the device is seen missing and \
+                          returns, or the session is re-applied",
                         if stream.input { "input" } else { "output" },
                     ),
-                    hint: Some("Reconnect the device; audio resumes automatically.".into()),
+                    hint: Some(
+                        "Re-plug the device (unplug and plug back in), or apply \
+                          again to retry with a fresh audio session."
+                            .into(),
+                    ),
                 });
             }
         }
