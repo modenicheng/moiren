@@ -110,6 +110,7 @@ pub(crate) fn empty_state(
         .px(px(theme::SPACE_4))
         .child(
             div()
+                .flex()
                 .flex_none()
                 .w(px(EMPTY_TILE))
                 .h(px(EMPTY_TILE))
