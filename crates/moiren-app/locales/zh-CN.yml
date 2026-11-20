@@ -1446,6 +1446,12 @@ _version: 2
 "The live parameter queue is busy; the candidate value is kept":
   en: "The live parameter queue is busy; the candidate value is kept"
   zh-CN: "实时参数队列繁忙；候选值已保留"
+"Parameter updates dropped: %{count}":
+  en: "Parameter updates dropped: %{count}"
+  zh-CN: "参数更新已丢弃：%{count} 次"
+"Request queue rejections: %{count}":
+  en: "Request queue rejections: %{count}"
+  zh-CN: "请求队列已拒绝：%{count} 次"
 "The apply request identity space is exhausted":
   en: "The apply request identity space is exhausted"
   zh-CN: "应用请求身份空间已耗尽"

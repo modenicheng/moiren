@@ -2169,6 +2169,53 @@ fn opening_a_status_panel_rebuilds_no_cached_page_panel(cx: &mut gpui_kit::TestA
     finish_service(runtime);
 }
 
+/// The cumulative bounded-queue degradation rides the same fault channel:
+/// a nonzero count mounts the status-bar summary, and clicking it opens the
+/// graph-wide fault popover that lists the factual count rows.
+#[gpui_kit::test]
+fn statusbar_surfaces_cumulative_queue_degradation(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_none(),
+            "zero counts wear no summary"
+        );
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            let mut snapshot = (*state.snapshot).clone();
+            snapshot.control.dropped_parameters = 2;
+            snapshot.control.rejected_requests = 1;
+            state.snapshot = std::sync::Arc::new(snapshot);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+        assert!(
+            window.try_find("statusbar-faults").is_some(),
+            "the degradation summary mounts the status bar"
+        );
+    });
+    cx.update(|window, cx| {
+        window.click("statusbar-faults", cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        view.read_with(cx, |shell, _| shell
+            .chrome
+            .fault_popover
+            .is_some_and(|popover| popover.node.is_none())),
+        "the summary click opens the graph-wide fault popover"
+    );
+    cx.update(|window, _| {
+        assert!(window.try_find("fault-popover").is_some());
+    });
+    finish_service(runtime);
+}
+
 /// The status bar's error summary is the unlocated errors' only surface
 /// since the error strip: absent while clean, a located fault never mounts
 /// it (that fault belongs to its own strip/card), a dispatch failure alone

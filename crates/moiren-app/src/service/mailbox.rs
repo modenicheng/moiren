@@ -73,6 +73,9 @@ impl Future for PublishedAfter {
 pub struct AppHandle {
     sender: SyncSender<QueuedRequest>,
     enqueue_id: Arc<Mutex<u64>>,
+    /// Cumulative queue-full rejections, shared with the service side so the
+    /// next publish carries the fact into the snapshot (truthful state).
+    rejected_requests: Arc<AtomicU64>,
     exit: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
     publish: Arc<PublishSignal>,
@@ -133,7 +136,10 @@ impl AppHandle {
         self.sender
             .try_send(QueuedRequest { id, payload })
             .map_err(|e| match e {
-                TrySendError::Full(_) => DispatchError::Busy,
+                TrySendError::Full(_) => {
+                    self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+                    DispatchError::Busy
+                }
                 TrySendError::Disconnected(_) => DispatchError::Disconnected,
             })?;
         *sequence = id.0;
@@ -172,6 +178,7 @@ pub struct ServiceMailbox {
     receiver: Receiver<QueuedRequest>,
     pending: RefCell<Option<QueuedRequest>>,
     consumed_request_id: Cell<RequestId>,
+    rejected_requests: Arc<AtomicU64>,
     exit: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
     /// Publish-side dedup state; only the service thread calls [`publish`].
@@ -185,6 +192,7 @@ impl ServiceMailbox {
     pub(crate) fn with_snapshot(wake: Thread, initial: AppSnapshot) -> (AppHandle, Self) {
         let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
         let exit = Arc::new(AtomicBool::new(false));
+        let rejected_requests = Arc::new(AtomicU64::new(0));
         let initial = Arc::new(initial);
         let snapshot = Arc::new(Mutex::new(Arc::clone(&initial)));
         let publish_signal = Arc::new(PublishSignal::default());
@@ -192,6 +200,7 @@ impl ServiceMailbox {
             AppHandle {
                 sender,
                 enqueue_id: Arc::new(Mutex::new(0)),
+                rejected_requests: rejected_requests.clone(),
                 exit: exit.clone(),
                 snapshot: snapshot.clone(),
                 publish: publish_signal.clone(),
@@ -201,6 +210,7 @@ impl ServiceMailbox {
                 receiver,
                 pending: RefCell::new(None),
                 consumed_request_id: Cell::new(RequestId::default()),
+                rejected_requests,
                 exit,
                 snapshot,
                 last_published: RefCell::new(Some(initial)),
@@ -260,6 +270,10 @@ impl ServiceMailbox {
         // The service publishes only after handling its drained round. A UI
         // holding an older phase snapshot cannot observe the newer receipt.
         value.consumed_request_id = self.consumed_request_id.get();
+        // Queue-full rejections are counted on the UI thread, so the fact
+        // merges into the snapshot here; the next rebuild would otherwise
+        // never observe the counter (it is not a service-side domain).
+        value.control.rejected_requests = self.rejected_requests.load(Ordering::Relaxed);
         // An unchanged snapshot keeps the previous Arc so the UI's pointer
         // identity poll sees no change and skips its notify; only real events
         // (requests, phase transitions, quantized clock ticks, tick-batched
@@ -489,6 +503,26 @@ mod tests {
     }
 
     type StreamBlockU32 = moiren_signal::StreamBlock<u32, u32>;
+
+    #[test]
+    fn queue_full_rejections_are_counted_into_the_published_snapshot() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        for _ in 0..REQUEST_CAPACITY {
+            handle.try_request(AppRequest::RefreshCatalog).unwrap();
+        }
+        // The bounded queue rejects without consuming an id, but the fact
+        // is counted and merges into the next publish.
+        assert_eq!(
+            handle.try_request(AppRequest::UndoGraph),
+            Err(DispatchError::Busy)
+        );
+        mailbox.publish((*handle.try_snapshot().unwrap()).clone());
+        assert_eq!(
+            handle.try_snapshot().unwrap().control.rejected_requests,
+            1,
+            "the queue-full rejection becomes a snapshot fact"
+        );
+    }
 
     #[test]
     fn topic_subscriptions_share_the_ordinary_queue_capacity_and_exit_gate() {

@@ -1606,6 +1606,48 @@ impl Rig {
 }
 
 #[test]
+fn overflowing_live_parameter_queue_counts_the_dropped_update() {
+    let mut r = Rig::new();
+    r.start();
+    let node = r.node(NodeKind::Gain);
+    // Pre-fill the bounded 64-slot queue, then submit one more target: the
+    // drop is counted as a cumulative fact without changing the queue policy.
+    r.driver.unsent = vec![
+        (
+            ParameterTarget::Strip {
+                node,
+                parameter: StripParameter::EffectiveMute,
+            },
+            ParamValue::Bool(true),
+        );
+        64
+    ];
+    r.driver.submit_parameter(
+        &mut r.c,
+        ParameterTarget::Strip {
+            node,
+            parameter: StripParameter::Gain,
+        },
+        ParamValue::Float(1.0),
+    );
+    assert_eq!(r.c.control.dropped_parameters, 1);
+    assert_eq!(
+        crate::service::snapshot(&r.c).control.dropped_parameters,
+        1,
+        "the degradation count is a published snapshot fact"
+    );
+    assert!(
+        r.c.graph
+            .snapshot()
+            .faults
+            .iter()
+            .any(|fault| fault.cause
+                == "The live parameter queue is busy; the candidate value is kept"),
+        "the located busy fault still rides the fault channel"
+    );
+}
+
+#[test]
 fn late_topology_activation_preserves_newer_parameter_apply_ack_barrier() {
     let mut r = Rig::new();
     r.start();

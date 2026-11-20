@@ -35,6 +35,7 @@ impl ManagedDriver {
         } else if self.unsent.len() < 64 {
             self.unsent.push((target, value));
         } else {
+            c.control.dropped_parameters = c.control.dropped_parameters.saturating_add(1);
             c.graph
                 .record_error("The live parameter queue is busy; the candidate value is kept");
         }
