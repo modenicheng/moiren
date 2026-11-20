@@ -24,6 +24,16 @@ work beyond buffer IO, no logging. Startup and teardown (negotiation, buffer
 allocation, stream start/stop, diagnostics) run outside that phase on the same
 thread and may allocate.
 
+**Unproven invariant — fault paths (audit X11).** The zero-allocation
+guarantee is proven for *normal* paths only (rt-check allocator
+instrumentation). Fault and early-return branches on audio threads — the
+error-string construction behind `bridge.rs::unsupported` and the render
+failure mapping in `Pump::cycle`, plus post-start `log::debug!` sites in
+`engine_backend/owner.rs` — may allocate and may log. They stay for their
+diagnostic value: when they run, the stream is already dying. Reviews must
+not cite fault paths as proven allocation-free; the code sites carry the
+same marker comment.
+
 | Thread | Spawned in | Responsibility |
 |---|---|---|
 | `moiren-professional-master` | `engine_backend/owner.rs` `start_worker` | Master native owner (WASAPI shared/exclusive or ASIO). Runs `Pump::cycle` — bridge ring refill, SRC, follower servo — and **`Engine::render` on this thread**; then `stream.wait`, the loop's only blocking call. |

@@ -521,6 +521,12 @@ fn native_owner<S: ProcessingSample>(
         // Activation authorizes native start even when the master has no PCM.
         // The follower pump supplies silence without advancing Engine.
         stream.start()?;
+        // UNPROVEN INVARIANT (audit X11): this log site executes on the
+        // audio thread after native start. The rt-check instrumentation
+        // pins zero allocation on the normal pump path, not the logging
+        // layer — log formatting may allocate. It stays for its diagnostic
+        // value (the transport is dying or starting, never mid-block);
+        // reviews must not cite it as proven allocation-free.
         log::debug!(
             target: "moiren::audio::professional",
             "native stream started: master={}",
@@ -705,6 +711,15 @@ impl Pump {
                 + 64,
         })
     }
+    /// One pump cycle.
+    ///
+    /// UNPROVEN INVARIANT (audit X11): the fault returns inside this cycle
+    /// (`unsupported(...)` at the capture/render guard rails, the
+    /// `e.to_string()` render-failure mapping) allocate while building
+    /// their error strings, on this audio thread. rt-check pins zero
+    /// allocation on the *normal* path only; these branches run when the
+    /// stream is already failing and keep their diagnostics. Reviews must
+    /// not cite them as proven allocation-free.
     pub(super) fn cycle<S: ProcessingSample>(
         &mut self,
         native: &mut dyn NativeStream,
