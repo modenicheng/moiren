@@ -111,21 +111,41 @@ impl CaptureSession {
         deadline: std::time::Instant,
     ) -> Result<CaptureReport, CaptureError> {
         let worker = self.worker.take().expect("owned capture worker");
-        while !worker.is_finished() {
-            if std::time::Instant::now() >= deadline {
-                drop(worker);
-                return Err(CaptureError::TeardownTimeout);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        worker.join().map_err(|_| CaptureError::WorkerPanicked)
+        join_bounded(worker, deadline)
     }
+}
+/// Wait for the worker until `deadline`, then detach it: a wedged
+/// `Initialize`/`Stop`/COM wind-down must not park the waiting thread
+/// forever (issue #105 teardown bound). The abandoned worker's apartment
+/// unwinds on its own thread whenever the driver call finally returns.
+fn join_bounded(
+    worker: JoinHandle<CaptureReport>,
+    deadline: std::time::Instant,
+) -> Result<CaptureReport, CaptureError> {
+    while !worker.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            drop(worker);
+            return Err(CaptureError::TeardownTimeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    worker.join().map_err(|_| CaptureError::WorkerPanicked)
 }
 impl Drop for CaptureSession {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
             let _ = self.request_stop();
-            let _ = worker.join();
+            // The fallback join is bounded like every other teardown join
+            // (issue #105): this drop covers the handshake-failure paths
+            // where no explicit `join`/`join_within` caller owns the
+            // worker, so a wedged COM wind-down detaches here instead of
+            // parking the dropping control thread forever. The lost report
+            // is unrecoverable on this path by construction; the timeout
+            // is deliberately swallowed.
+            let _ = join_bounded(
+                worker,
+                std::time::Instant::now() + crate::NATIVE_TEARDOWN_DEADLINE,
+            );
         }
     }
 }

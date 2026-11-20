@@ -76,7 +76,28 @@ impl Exclusive {
         CONTEXT.store(ptr::null_mut(), Ordering::SeqCst);
         // Only the non-RT owner waits. New callbacks see null and leave without
         // touching any session memory. The seq-cst count precedes pointer load.
+        // The barrier wait is bounded (issue #105 teardown bound): a healthy
+        // callback holds its reader slot for microseconds, so the per-resource
+        // teardown deadline is orders of magnitude of headroom.
+        let deadline = std::time::Instant::now() + crate::NATIVE_TEARDOWN_DEADLINE;
         while READERS.load(Ordering::SeqCst) != 0 {
+            if std::time::Instant::now() >= deadline {
+                // Third-party contract risk, declared: the reader section
+                // itself never blocks, so a READERS count stuck above zero
+                // means the driver's callback thread is wedged inside Moiren
+                // code — the ASIO contract is already broken by the driver.
+                // Abandoning the wait follows the same teardown semantics as
+                // every other deadline in this crate (fence and move on): the
+                // alternative is parking Stop, re-apply and app exit forever
+                // on a dead driver. The residual risk is that the wedged
+                // callback later touches session memory freed after detach.
+                log::error!(
+                    target: "moiren::audio::asio",
+                    "ASIO detach barrier timed out with {} in-flight callback(s); abandoning the wait — a wedged driver callback may fault during teardown",
+                    READERS.load(Ordering::SeqCst),
+                );
+                return;
+            }
             std::thread::yield_now();
         }
     }
