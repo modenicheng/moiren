@@ -294,6 +294,13 @@ impl PcmSoak {
             .context("PCM soak captured-frame counter overflow")?;
         self.last_packet_ms = Some(now_ms);
         self.last_packet_observed_ms = Some(now_ms);
+        // Settling allows the previous waveform to drain. The capture stream
+        // stays open across a pattern change, so a discontinuity still fails.
+        if discontinuity {
+            self.quality_failed = true;
+            self.glitch
+                .record(now_ms, "pcm_capture_discontinuity", packet_frames);
+        }
         let settling_frames = if now_ms < self.settling_until_ms {
             packet_frames.min(self.settling_frames_remaining)
         } else {
@@ -305,8 +312,7 @@ impl PcmSoak {
             let (settling, steady) = samples.split_at(settling_frames as usize * 2);
             self.settling_frames_remaining -= settling_frames;
             self.settling_frames += settling_frames;
-            // A packet crossing the boundary keeps its discontinuity on the
-            // validated suffix, where it fails the steady-state quality gate.
+            // Attribute each discontinuity to one set of sample counters.
             self.settling_discontinuities += u64::from(discontinuity && steady.is_empty());
             for frame in settling.as_chunks::<2>().0 {
                 if frame.iter().any(|sample| !sample.is_finite()) {
@@ -356,11 +362,6 @@ impl PcmSoak {
         // Quality defects are recorded and the soak continues: the finish
         // gates still fail the phase, but the run keeps collecting the full
         // duration's jitter, recovery and resource evidence.
-        if discontinuity {
-            self.quality_failed = true;
-            self.glitch
-                .record(now_ms, "pcm_capture_discontinuity", packet_frames);
-        }
         let silent = current.silent_frames - before.silent_frames;
         if silent > 0 {
             self.quality_failed = true;
@@ -1344,6 +1345,36 @@ mod tests {
             assert_eq!(pcm.validated.matching_frames, 48_479);
             assert_eq!(pcm.validated.discontinuities, u64::from(discontinuity));
             assert_eq!(pcm.quality_failed, discontinuity);
+        }
+    }
+
+    #[test]
+    fn discontinuity_during_source_settling_fails_pcm_soak() {
+        let original_packet = EXPECTED.repeat(480);
+        let changed_packet = SECOND_EXPECTED.repeat(480);
+        for discontinuity in [false, true] {
+            let mut pcm = PcmSoak::new(3_000, EXPECTED);
+            for now in (0..1_000).step_by(10) {
+                pcm.observe(now, &original_packet, false).unwrap();
+            }
+            pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
+            for now in (1_000..2_000).step_by(10) {
+                pcm.observe(now, &original_packet, discontinuity && now == 1_500)
+                    .unwrap();
+            }
+            for now in (2_000..=3_000).step_by(10) {
+                pcm.observe(now, &changed_packet, false).unwrap();
+            }
+
+            assert_eq!(pcm.settling_frames, 48_000);
+            assert_eq!(pcm.settling_discontinuities, u64::from(discontinuity));
+            assert_eq!(pcm.validated.discontinuities, 0);
+            assert_eq!(pcm.finish(3_000).is_err(), discontinuity);
+            assert_eq!(pcm.completed, !discontinuity);
+            assert_eq!(pcm.glitch.glitch_count, u64::from(discontinuity));
+            if discontinuity {
+                assert_eq!(pcm.glitch.glitches[0].kind, "pcm_capture_discontinuity");
+            }
         }
     }
 

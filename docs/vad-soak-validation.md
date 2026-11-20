@@ -67,8 +67,11 @@ mode records its duration in `soak_pcm`.
 
 The generated signal allows up to one second and 48,000 capture frames for
 settling after each pattern change at 48 kHz. If a packet exhausts the frame
-budget within that second, its remaining frames enter waveform validation. A
-discontinuity on that packet also enters the steady-state quality check.
+budget within that second, its remaining frames enter waveform validation.
+The capture stream stays open during settling. A WASAPI discontinuity or a gap
+in the device frame positions fails the soak even when the whole packet falls
+within a settling window. The probe records the fault and continues collecting
+evidence until the run ends.
 
 When capture packet positions first jump forward, the probe retains that
 packet's sequence number, expected and observed device frames, and the adjacent
