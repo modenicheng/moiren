@@ -125,7 +125,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
             };
             report.elapsed_ms = started.elapsed().as_millis();
             report.error = Some(format!(
-                "coordinator {error}; graceful cleanup not confirmed"
+                "coordinator {error:#}; graceful cleanup not confirmed"
             ));
             if let Err(error) = emit_report(&directory, &report) {
                 eprintln!("could not persist timeout report: {error:#}");
