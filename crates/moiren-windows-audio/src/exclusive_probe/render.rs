@@ -5,9 +5,9 @@ use crate::{
     catalog::{ApiFailure, FormatSnapshot},
     negotiation::{
         endpoint_data_flow, exclusive_format_supported, exclusive_frames_duration,
-        initialize_exclusive,
+        initialize_exclusive, mix_format, open_endpoint_device,
     },
-    win32_raii::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
+    win32_raii::{Apartment, Mmcss, OwnedHandle, Streaming},
 };
 use anyhow::Context;
 use std::{
@@ -27,15 +27,11 @@ use windows::{
         },
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED,
-            AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
-            MMDeviceEnumerator, WAVEFORMATEX, eRender,
+            AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioClient, IAudioRenderClient, WAVEFORMATEX, eRender,
         },
-        System::{
-            Com::{CLSCTX_ALL, CoCreateInstance},
-            Threading::WaitForMultipleObjects,
-        },
+        System::{Com::CLSCTX_ALL, Threading::WaitForMultipleObjects},
     },
-    core::{HSTRING, Result},
+    core::Result,
 };
 
 pub(super) struct Owner {
@@ -132,19 +128,14 @@ fn serve(
     report.last_stage = "CoInitializeEx(exclusive)";
     let _apartment = Apartment::new()?;
     report.last_stage = "GetDevice / render flow";
-    let enumerator: IMMDeviceEnumerator =
-        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-    let device = unsafe { enumerator.GetDevice(&HSTRING::from(endpoint_id))? };
+    let device = open_endpoint_device(endpoint_id)?;
     if endpoint_data_flow(&device)? != eRender {
         return Err(windows::core::Error::from_hresult(E_INVALIDARG));
     }
     let event = OwnedHandle::event()?;
     let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
     report.last_stage = "GetMixFormat / IsFormatSupported(Exclusive)";
-    let mix = TaskMemory(unsafe { client.GetMixFormat()? });
-    if mix.0.is_null() {
-        return Err(windows::core::Error::from_hresult(E_UNEXPECTED));
-    }
+    let mix = mix_format(&client)?;
     // The CoTaskMem allocation retains the complete extensible format, if any.
     let candidates = [48_000, 44_100].map(|rate| {
         [
