@@ -8,9 +8,10 @@ Editable, transport-neutral `LogicalGraph` plus the control protocol. Non-RT onl
 
 ## Layout
 
-- `src/graph.rs`: `LogicalGraph`, primitive mutations (`create_node`, `add_input_port`/`add_output_port`, `connect`, `disconnect`, `remove_node`, `set_send_params`), `topological_order`, and `validate`.
+- `src/graph.rs`: `LogicalGraph`, with primitive mutations grouped by responsibility — construction (`create_node`, `create_channel_mapper`, `create_rack`), dynamic ports (`add_input_port`/`add_output_port`/`remove_input_port`/`remove_output_port`), wiring (`connect`, `disconnect`, `remove_node`), node configuration (`set_send_params`, `set_node_channels`), probing (`can_connect`), and graph inspection (`topological_order`, `validate`).
 - `src/graph/model.rs`: `NodeKind` (closed enum), `Node`/`Port`/`Edge`, ID newtypes, `SendParams`, `GraphError`, and `initial_ports()`.
 - `src/graph/edit.rs`: composed non-RT editor commands (for example `connect_to_new_bus_input`) that roll back on failure; IDs stay monotonic even when an edit fails.
+- `src/graph/tests.rs` (`#[cfg(test)] mod tests`): unit coverage for the rejections that must leave the graph unchanged — atomic ID exhaustion, connect-rule rejections, the u16 port-index budget, `validate` cycle/layout detection, and `set_node_channels` resizing.
 - `src/protocol.rs`: transport-neutral control messages (`ParameterRequest`, `ControlReply`, `PROTOCOL_VERSION`, fixed body sizes). No realtime memory addresses cross IPC.
 - `tests/graph.rs`: integration coverage for topology and validation.
 

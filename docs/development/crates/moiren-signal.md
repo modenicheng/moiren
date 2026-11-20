@@ -20,10 +20,11 @@ Do not turn this crate into a general pub/sub broker: its contract is fixed-capa
 ## Invariants
 
 - Never allocate, lock, or make syscalls on the RT path. Preparation allocates and charges storage; `commit` moves only preallocated owners; `RetiredHostUpdate`, activation failures, and the stopped host must return to non-RT before being dropped (destruction can free heap storage and final lifecycle leases).
-- Publication requires a `scope(&op)` authorized by a current operation table. A superseded table fails even if the key/handle is reused; scopes and block guards borrow the exclusive host access and are not `Send`.
+- Publication requires a `scope(&op)` authorized by a current operation table. One `BindingKey` may authorize several topics for one operation, while every update has its own table identity. A superseded table fails even if the key/handle is reused; scopes and block guards borrow the exclusive host access and are not `Send`.
 - `Latest` is observation with coalescing; `Stream` is a bounded ordered queue with local drop on full subscribers and no replay for late subscribers. Preserve those semantics when touching fanout.
 - Budget the complete transport layout (metadata plus payload plus padding) and keep `required_copy_bytes` and the saturating statistics truthful. Pump visits directory slots round-robin; no worker or wakeup is created.
 - Keep the `BusConfig` limits and the "no concurrent host migration" rule; a new host may rebind a registered topic only after the old host is stopped and released on non-RT.
+- `Bus::unregister` is transactional: it returns `Busy` without changing anything while a publisher binding or lifecycle lease remains. Status distinguishes `Closed`, `NoPublisher`, and an empty read; previously held guards stay valid, and removing a publisher alone keeps old snapshots and queued messages. Stable cells keep the original transport producer and checked sequence across activation and never reset the demand cache.
 
 ## Verification
 
@@ -36,6 +37,6 @@ CI runs Miri in stacked and Tree Borrows modes. The allocator tests enable the T
 
 ## Docs
 
-- [crate README](../../../crates/moiren-signal/README.md) is the canonical contract for ownership, activation, budgeting, and verification boundaries.
+- This guide is the single canonical contract for ownership, activation, budgeting, and verification boundaries; the [crate README](../../../crates/moiren-signal/README.md) is a short pointer to it. Keep contract details here instead of duplicating them in the README.
 - [RT/UI signal bus design](../../superpowers/specs/2026-10-10-rt-ui-signal-bus-design.md) is the design record.
 - [Architecture rules](../architecture.md) for the repo-wide RT rules.

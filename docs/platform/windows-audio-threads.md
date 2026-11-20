@@ -26,8 +26,8 @@ thread and may allocate.
 
 | Thread | Spawned in | Responsibility |
 |---|---|---|
-| `moiren-professional-master` | `engine_backend/owner.rs` `spawn` | Master native owner (WASAPI shared/exclusive or ASIO). Runs `Pump::cycle` — bridge ring refill, SRC, follower servo — and **`Engine::render` on this thread**; then `stream.wait`, the loop's only blocking call. |
-| `moiren-professional-device` | `engine_backend/owner.rs` `spawn` | Additional non-master native owners. Same loop, never borrows `Engine`: the follower pump renders silence resampled and servo-paced to the device rate. |
+| `moiren-professional-master` | `engine_backend/owner.rs` `start_worker` | Master native owner (WASAPI shared/exclusive or ASIO). Runs `Pump::cycle` — bridge ring refill, SRC, follower servo — and **`Engine::render` on this thread**; then `stream.wait`, the loop's only blocking call. |
+| `moiren-professional-device` | `engine_backend/owner.rs` `start_worker` | Additional non-master native owners. Same loop, never borrows `Engine`: the follower pump renders silence resampled and servo-paced to the device rate. |
 | ASIO driver callback thread | the third-party ASIO driver | Not created by Moiren. The code that runs on it is `asio/callback.rs`. |
 | `moiren-virtual-owner` | `virtual_owner/owner.rs` | Virtual transport owner for software-only graphs. Paces `Engine::render` against the virtual realtime clock (`virtual_owner/pacer.rs`, high-resolution waitable timer). |
 | `moiren-vad-pcm` | `vad/provider.rs` `VadSession::spawn` | One worker per VAD device session. Overlapped PCM IO against the VAD driver plus fixed-size PCM conversion; feeds the RT boundary objects. |
