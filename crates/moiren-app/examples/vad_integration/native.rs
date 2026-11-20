@@ -697,7 +697,7 @@ impl Stream {
         if frames == 0 {
             return Ok(());
         }
-        let result = (|| -> anyhow::Result<()> {
+        let copied = (|| -> anyhow::Result<bool> {
             ensure!(frames <= self.frames, "capture lease exceeds capacity");
             let decoded = &mut self.decoded[..frames as usize * 2];
             if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
@@ -720,19 +720,83 @@ impl Stream {
                     .observe(device_position, qpc, frames, discontinuity, timestamp_error);
             // Short Stage2 retains its existing discontinuity criterion. Soak
             // additionally rejects missing/untrusted native packet positions.
-            observe(
-                decoded,
-                discontinuity || (self.clock.is_some() && position_gap),
-            )
+            Ok(discontinuity || (self.clock.is_some() && position_gap))
         })();
-        let released = unsafe { capture.ReleaseBuffer(frames) };
-        result?;
-        released.context("ReleaseBuffer(capture)")
+        finish_capture_packet(
+            copied,
+            || unsafe { capture.ReleaseBuffer(frames) },
+            |discontinuity| observe(&self.decoded[..frames as usize * 2], discontinuity),
+        )
     }
 }
 impl Drop for Stream {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+fn finish_capture_packet(
+    copied: anyhow::Result<bool>,
+    release: impl FnOnce() -> windows::core::Result<()>,
+    observe: impl FnOnce(bool) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Return the native packet even on decode failure. Sample validation
+    // only needs the scratch copy, so it runs outside the WASAPI lease.
+    let released = release();
+    let discontinuity = copied?;
+    released.context("ReleaseBuffer(capture)")?;
+    observe(discontinuity)
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::finish_capture_packet;
+    use std::cell::Cell;
+    use windows::Win32::Foundation::E_FAIL;
+
+    #[test]
+    fn capture_packet_release_precedes_sample_validation() {
+        let released = Cell::new(false);
+        finish_capture_packet(
+            Ok(true),
+            || {
+                released.set(true);
+                Ok(())
+            },
+            |discontinuity| {
+                assert!(released.get());
+                assert!(discontinuity);
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_capture_release_never_validates_samples() {
+        let error = finish_capture_packet(
+            Ok(false),
+            || Err(E_FAIL.into()),
+            |_| panic!("unreleased capture packet entered sample validation"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "ReleaseBuffer(capture)");
+    }
+
+    #[test]
+    fn failed_capture_copy_still_releases_packet() {
+        let released = Cell::new(false);
+        let error = finish_capture_packet(
+            Err(anyhow::anyhow!("invalid capture packet")),
+            || {
+                released.set(true);
+                Ok(())
+            },
+            |_| panic!("invalid capture packet entered sample validation"),
+        )
+        .unwrap_err();
+        assert!(released.get());
+        assert_eq!(error.to_string(), "invalid capture packet");
     }
 }
 

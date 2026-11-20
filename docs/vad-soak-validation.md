@@ -73,6 +73,9 @@ in the device frame positions fails the soak even when the whole packet falls
 within a settling window. The probe records the fault and continues collecting
 evidence until the run ends.
 
+The native capture client copies each packet into its scratch buffer. Sample
+checks run only after WASAPI accepts the return of the native packet.
+
 When capture packet positions first jump forward, the probe retains that
 packet's sequence number, expected and observed device frames, and the adjacent
 packet QPC timestamps in `native_diagnostics.capture.first_gap`. Use those
