@@ -25,11 +25,10 @@ The new modules compose one retained capture session:
   their operations, and combines their verdicts. A successful OBS normal close
   cannot override a failed recording transition or failed setup.
 
-The fixed installation stays at
-`D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`. No executable tree
-is copied, moved or created per run; the user's ordinary OBS is not adopted or
-terminated. The existing identity/SID/executable/port/lease guards remain in
-`obs-reuse.py`. No firewall or other security policy changes are introduced.
+The harness reuses the dedicated installation. Current runners get that
+installation and the exact render endpoint from the
+[local OBS profile](../development/local.example.md#obs-targetjson). The
+identity, executable, port and lease guards are in `obs-reuse.py`.
 
 Each native case must retain `ObsCaptureSession` before `start()`, provide the
 case's finite watchdog/check/launch/join and exact-owner normal-window-close
@@ -52,8 +51,6 @@ hash, tracks, waveform correspondence, continuity and calibrated latency remain
 independent required evidence. Receipt creation is create-new, not overwrite.
 
 ## Verification and limitations
-
-Evidence root: `D:\coding\moiren-evidence\20261108-102500-obs-acquisition`.
 
 Fresh file/mocked-boundary suites pass:
 

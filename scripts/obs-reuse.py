@@ -7,18 +7,21 @@ protocol. This helper never starts recording, closes windows or kills processes.
 """
 import argparse
 import base64
+from functools import partial
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
 import subprocess
 import sys
 import zipfile
 
-CANONICAL_ROOT = Path(r'D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable')
-EXE_SHA256 = '30FB8CCF7700B6747FBF349845EC0EE0DDCBCD1189AA67607E1FF6ADC7EC9E80'
+DEFAULT_TARGET_PROFILE = (Path(__file__).resolve().parents[1] /
+                          'docs/development/local/obs-target.json')
+MAX_TARGET_PROFILE_BYTES = 8192
 MAX_CONFIG_BYTES = 16 * 1024 * 1024
 MAX_CONFIG_FILES = 1024
 
@@ -60,15 +63,21 @@ def save(path, value):
         stream.write(text)
 
 
-def windows_idle_check(environment=None):
+def windows_idle_check(computer_name, user_sid, environment=None):
+    # Validate both values before interpolating them into the fixed query.
+    if not re.fullmatch(r'[A-Za-z0-9-]{1,15}', computer_name) or not re.fullmatch(
+            r'S-1-[0-9]+(?:-[0-9]+){1,15}', user_sid):
+        raise ValueError('invalid OBS target identity')
     environment = os.environ if environment is None else environment
-    if environment.get('COMPUTERNAME') != 'LAPTOP-NP49RG6H' or os.name != 'nt':
+    if environment.get('COMPUTERNAME') != computer_name or os.name != 'nt':
         raise RuntimeError('OBS operation requires the separate authorized target')
     script = r"""
 $ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-if([Security.Principal.WindowsIdentity]::GetCurrent().User.Value-cne
- 'S-1-5-21-3080296863-1242338503-1346362208-1001'){throw 'Wrong OBS target identity'}
+if([Environment]::MachineName-cne '__COMPUTER__' -or
+ [Security.Principal.WindowsIdentity]::GetCurrent().User.Value-cne '__SID__'){
+    throw 'Wrong OBS target identity'
+}
 $owners=@(Get-CimInstance Win32_Process -OperationTimeoutSec 5 |
  Where-Object {$_.Name-match'^obs.*\.exe$'} |
  Select-Object ProcessId,Name)
@@ -76,6 +85,7 @@ $listeners=@([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties(
  Where-Object {$_.Port-eq4471} | ForEach-Object {$_.ToString()})
 @{owners=$owners;listeners=$listeners}|ConvertTo-Json -Depth 3 -Compress
 """
+    script = script.replace('__COMPUTER__', computer_name).replace('__SID__', user_sid)
     encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
     result = subprocess.run(
         ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
@@ -92,8 +102,38 @@ $listeners=@([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties(
 
 
 class ReusedObs:
-    def __init__(self, root=CANONICAL_ROOT, expected_sha256=EXE_SHA256, *,
-                 idle_check=windows_idle_check, max_config_bytes=MAX_CONFIG_BYTES,
+    @classmethod
+    def configured(cls):
+        path = Path(os.environ.get('MOIREN_OBS_TARGET_PROFILE', DEFAULT_TARGET_PROFILE))
+        if not path.is_absolute():
+            raise ValueError('OBS target profile path must be absolute')
+        try:
+            with no_links(path).open('rb') as stream:
+                data = stream.read(MAX_TARGET_PROFILE_BYTES + 1)
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f'OBS target profile is missing at {path}') from error
+        if len(data) > MAX_TARGET_PROFILE_BYTES:
+            raise ValueError('OBS target profile size cap exceeded')
+        profile = json.loads(data.decode('utf-8-sig'))
+        fields = {'computer_name', 'user_sid', 'installation_root', 'executable_sha256',
+                  'capture_endpoint_id'}
+        if (not isinstance(profile, dict) or profile.keys() != fields or
+                not all(isinstance(value, str) for value in profile.values())):
+            raise ValueError('invalid OBS target profile fields')
+        computer_name, user_sid = profile['computer_name'], profile['user_sid']
+        root = Path(profile['installation_root'])
+        sha256 = profile['executable_sha256']
+        endpoint_id = profile['capture_endpoint_id']
+        if not root.is_absolute() or not re.fullmatch(r'[0-9A-Fa-f]{64}', sha256):
+            raise ValueError('OBS target profile requires an absolute installation root and SHA-256')
+        if (not re.fullmatch(r'[^\x00-\x1f\x7f]{1,1024}', endpoint_id) or
+                endpoint_id != endpoint_id.strip() or endpoint_id.casefold() == 'default'):
+            raise ValueError('OBS target profile requires an explicit capture endpoint ID')
+        return cls(root, sha256.upper(), idle_check=partial(windows_idle_check, computer_name, user_sid),
+                   capture_endpoint_id=endpoint_id)
+
+    def __init__(self, root, expected_sha256, *, idle_check,
+                 capture_endpoint_id=None, max_config_bytes=MAX_CONFIG_BYTES,
                  max_config_files=MAX_CONFIG_FILES):
         if not 1 <= max_config_bytes <= MAX_CONFIG_BYTES or not 1 <= max_config_files <= MAX_CONFIG_FILES:
             raise ValueError('configuration cap out of range')
@@ -102,6 +142,7 @@ class ReusedObs:
         self.config = self.root / 'config/obs-studio'
         self.expected_sha256 = expected_sha256
         self.idle_check = idle_check
+        self.capture_endpoint_id = capture_endpoint_id
         self.max_config_bytes = max_config_bytes
         self.max_config_files = max_config_files
         self.lease = None
@@ -299,9 +340,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', required=True,
                         help='read-only identity, executable and existing-owner check')
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     try:
-        value = ReusedObs().check()
+        value = ReusedObs.configured().check()
         print(json.dumps(value, ensure_ascii=True))
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

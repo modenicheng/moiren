@@ -24,6 +24,7 @@ REUSE = load('acquisition_reuse_tests', SCRIPTS / 'obs-reuse.py')
 SOURCE = SCRIPTS / 'obs-acquisition.py'
 MODULE = load('obs_acquisition_tests', SOURCE) if SOURCE.exists() else None
 RECORDING = load('obs_recording_acquisition_tests', SCRIPTS / 'obs-recording.py')
+TEST_ENDPOINT = '{0.0.0.00000000}.{abcdef12-3456-7890-abcd-ef1234567890}'
 
 
 class Clock:
@@ -118,7 +119,8 @@ class AcquisitionTests(unittest.TestCase):
         self.socket_error = self.join_error = self.close_error = False
         self.exit_code = 0
         self.fail_kind = None
-        self.reuse = REUSE.ReusedObs(self.install, self.sha, idle_check=lambda: None)
+        self.reuse = REUSE.ReusedObs(self.install, self.sha, idle_check=lambda: None,
+                                   capture_endpoint_id=TEST_ENDPOINT)
         self.addCleanup(self.release_fixture)
         self.case = Case(self)
         self.adapter = self.make_adapter()
@@ -149,16 +151,26 @@ class AcquisitionTests(unittest.TestCase):
             self.case, connect or self.connect, self.close_window,
             reuse=self.reuse, clock=self.clock, sleep=self.clock.sleep)
 
-    def test_default_session_keeps_canonical_target_guard(self):
-        adapter = MODULE.ObsAcquisition(self.case, self.connect, self.close_window)
-        self.assertEqual(adapter.reuse.root, MODULE.REUSE.CANONICAL_ROOT.absolute())
-        self.assertIs(adapter.reuse.idle_check, MODULE.REUSE.windows_idle_check)
+    def target_profile(self):
+        path = self.root / 'obs-target.json'
+        profile = dict(computer_name='OBS-TEST-01', user_sid='S-1-5-21-123-456-789-1001',
+                       installation_root=str(self.install), executable_sha256=self.sha,
+                       capture_endpoint_id=TEST_ENDPOINT)
+        path.write_text(json.dumps(profile), encoding='utf-8')
+        return {'MOIREN_OBS_TARGET_PROFILE': str(path)}
+
+    def test_default_session_loads_target_profile(self):
+        with mock.patch.dict('os.environ', self.target_profile()):
+            adapter = MODULE.ObsAcquisition(self.case, self.connect, self.close_window)
+        self.assertEqual(adapter.reuse.root, self.install)
+        self.assertEqual(adapter.reuse.capture_endpoint_id, TEST_ENDPOINT)
 
     def test_default_guard_refuses_host_before_any_process_or_config_operation(self):
-        adapter = MODULE.ObsAcquisition(self.case, self.connect, self.close_window)
-        with mock.patch.dict('os.environ', {'COMPUTERNAME': 'NOT-THE-AUTHORIZED-TARGET'}), \
+        environment = self.target_profile() | {'COMPUTERNAME': 'DEVELOPMENT-01'}
+        with mock.patch.dict('os.environ', environment), \
                 mock.patch.object(MODULE.REUSE.subprocess, 'run',
                                   side_effect=AssertionError('native process query')):
+            adapter = MODULE.ObsAcquisition(self.case, self.connect, self.close_window)
             with self.assertRaisesRegex(RuntimeError, 'separate authorized target'):
                 adapter.open()
         self.assertEqual(self.case.launches, [])
@@ -177,7 +189,7 @@ class AcquisitionTests(unittest.TestCase):
             ('GetVersion', None),
             ('CreateInput', {'sceneName': 'Isolated', 'inputName': 'DawnOutput',
                              'inputKind': 'wasapi_output_capture', 'inputSettings': {
-                                 'device_id': '{0.0.0.00000000}.{65148f19-e008-4b5b-b289-9dc1f426d9a1}',
+                                 'device_id': TEST_ENDPOINT,
                                  'use_device_timing': True}, 'sceneItemEnabled': True}),
             ('SetInputAudioTracks', {'inputName': 'DawnOutput', 'inputAudioTracks': {
                 str(i): i == 1 for i in range(1, 7)}}),

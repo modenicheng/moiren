@@ -23,7 +23,6 @@ SPEC = importlib.util.spec_from_file_location('obs_acquisition_reuse',
 REUSE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REUSE)
 
-DAWN_ENDPOINT = '{0.0.0.00000000}.{65148f19-e008-4b5b-b289-9dc1f426d9a1}'
 READINESS_SECONDS = 35
 READINESS_ATTEMPTS = 140
 CONFIGURATION_SECONDS = 10
@@ -34,10 +33,12 @@ JOIN_SECONDS = 12
 class ObsAcquisition:
     def __init__(self, case, connect, close_window, *, reuse=None,
                  clock=time.monotonic, sleep=time.sleep):
-        # Injectable reuse/clock boundaries are for file-only tests. A deployed
-        # caller uses the default fixed-path target/SID/hash/owner guards.
+        # File-only tests inject reuse and clock boundaries. The deployed
+        # path loads the pinned installation and endpoint from the target profile.
         self.case, self.connect, self.close_window = case, connect, close_window
-        self.reuse = REUSE.ReusedObs() if reuse is None else reuse
+        self.reuse = REUSE.ReusedObs.configured() if reuse is None else reuse
+        if not self.reuse.capture_endpoint_id:
+            raise ValueError('OBS acquisition requires an explicit capture endpoint ID')
         self.clock, self.sleep = clock, sleep
         self.client = None
         self.open_attempted = self.close_attempted = self.finished = False
@@ -104,7 +105,8 @@ class ObsAcquisition:
         steps = [
             ('CreateInput', dict(sceneName='Isolated', inputName='DawnOutput',
                                  inputKind='wasapi_output_capture', inputSettings=dict(
-                                     device_id=DAWN_ENDPOINT, use_device_timing=True),
+                                     device_id=self.reuse.capture_endpoint_id,
+                                     use_device_timing=True),
                                  sceneItemEnabled=True)),
             ('SetInputAudioTracks', dict(inputName='DawnOutput', inputAudioTracks={
                 str(i): i == 1 for i in range(1, 7)})),

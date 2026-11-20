@@ -4,13 +4,11 @@ Date: 2026-11-08, Asia/Shanghai. This follows the completed
 [30-copy cleanup](2026-11-08-reused-obs-cleanup.md). It implements the reuse
 boundary for future acquisition harnesses, not another waveform acceptance run.
 
-## Fixed-path API
+## Dedicated installation API
 
-`scripts/obs-reuse.py` defaults to the existing dedicated installation:
-
-```text
-D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable
-```
+The November 8 run used a pinned dedicated installation. For current runs,
+configure the installation and target identity in the
+[local OBS profile](../development/local.example.md#obs-targetjson).
 
 The only command-line action is `--check`: read-only target/SID, executable
 hash, existing OBS owner and websocket-port4471 checks. It cannot launch OBS,
@@ -59,9 +57,6 @@ before descent. Reparse/symlink/hardlinked paths, application/recording files,
 noncanonical `..` paths, reused evidence and existing recording directories
 are refused. Output JSON is capped independently at1MiB. Original ordinary OBS
 configuration outside the dedicated tree is never a write target.
-
-Evidence root:
-`D:\coding\moiren-evidence\20261108-004446-reusable-obs`.
 
 - Initial16tests fail for the missing helper, then pass after implementation.
 - Independent review's traversal, uncertain-launch retry and lock-initialization

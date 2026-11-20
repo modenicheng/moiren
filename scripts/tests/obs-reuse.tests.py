@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """File-only reuse checks; never launch OBS or touch an audio device."""
+import base64
 import hashlib
 import importlib.util
 import json
@@ -18,6 +19,11 @@ SPEC = importlib.util.spec_from_file_location('obs_reuse', SOURCE) if SOURCE.exi
 MODULE = importlib.util.module_from_spec(SPEC) if SPEC else None
 if SPEC:
     SPEC.loader.exec_module(MODULE)
+
+
+TEST_COMPUTER = 'OBS-TEST-01'
+TEST_SID = 'S-1-5-21-123-456-789-1001'
+TEST_ENDPOINT = '{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'
 
 
 class Process:
@@ -337,7 +343,7 @@ session.acquire();print("locked",flush=True);sys.stdin.readline();session.releas
         self.assertEqual(media.read_bytes(), b'preserved media')
         self.assertFalse((self.config / 'basic/profiles/Isolated/basic.ini').exists())
 
-    def test_cli_has_only_readonly_fixed_path_check(self):
+    def test_cli_has_only_readonly_check(self):
         result = subprocess.run([sys.executable, '-B', str(SOURCE), '--help'],
                                 capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0)
@@ -346,9 +352,66 @@ session.acquire();print("locked",flush=True);sys.stdin.readline();session.releas
         self.assertNotIn('--install-root', text)
         self.assertNotIn('--launch', text)
 
+    def target_profile(self, **overrides):
+        profile = dict(computer_name=TEST_COMPUTER, user_sid=TEST_SID,
+                       installation_root=str(self.install), executable_sha256=self.sha.lower(),
+                       capture_endpoint_id=TEST_ENDPOINT)
+        path = self.root / 'obs-target.json'
+        path.write_text(json.dumps(profile | overrides), encoding='utf-8')
+        return path
+
+    def test_configured_check_uses_local_identity_and_normalizes_executable_pin(self):
+        with mock.patch.dict(os.environ, {'MOIREN_OBS_TARGET_PROFILE': str(self.target_profile())}), \
+                mock.patch.object(MODULE, 'windows_idle_check') as idle:
+            session = MODULE.ReusedObs.configured()
+            receipt = session.check()
+        idle.assert_called_once_with(TEST_COMPUTER, TEST_SID)
+        self.assertEqual(receipt['executable'], str(self.exe))
+        self.assertEqual(receipt['executable_sha256'], self.sha)
+        self.assertEqual(session.capture_endpoint_id, TEST_ENDPOINT)
+
+    def test_default_profile_path_is_relative_to_script_repository(self):
+        with mock.patch.dict(os.environ, clear=True), \
+                mock.patch.object(MODULE, 'DEFAULT_TARGET_PROFILE', self.target_profile()), \
+                mock.patch.object(MODULE, 'windows_idle_check'):
+            self.assertEqual(MODULE.ReusedObs.configured().root, self.install)
+
+    def test_invalid_profile_refuses_before_native_owner_check(self):
+        for overrides in (dict(computer_name="OBS';exit"), dict(user_sid='S-1-5\n'),
+                          dict(installation_root='relative/obs'), dict(executable_sha256='00'),
+                          dict(capture_endpoint_id='default'), dict(capture_endpoint_id=''),
+                          dict(capture_endpoint_id=None), dict(unknown='value')):
+            environment = {'MOIREN_OBS_TARGET_PROFILE': str(self.target_profile(**overrides))}
+            with self.subTest(overrides), mock.patch.dict(os.environ, environment), \
+                    mock.patch.object(MODULE.subprocess, 'run') as run:
+                with self.assertRaises(ValueError):
+                    MODULE.ReusedObs.configured().check()
+                run.assert_not_called()
+
+    def test_oversized_profile_refuses_before_parse(self):
+        path = self.target_profile()
+        with path.open('ab') as stream:
+            stream.write(b' ' * MODULE.MAX_TARGET_PROFILE_BYTES)
+        with mock.patch.dict(os.environ, {'MOIREN_OBS_TARGET_PROFILE': str(path)}):
+            with self.assertRaisesRegex(ValueError, 'profile size cap'):
+                MODULE.ReusedObs.configured()
+
+    def test_cli_missing_profile_refuses_without_process_query(self):
+        path = self.root / 'missing.json'
+        with mock.patch.dict(os.environ, {'MOIREN_OBS_TARGET_PROFILE': str(path)}), \
+                mock.patch.object(MODULE.subprocess, 'run') as run, \
+                mock.patch.object(sys, 'stderr') as stderr:
+            self.assertEqual(MODULE.main(['--check']), 1)
+        run.assert_not_called()
+        self.assertTrue(any(str(path) in call.args[0] for call in stderr.write.call_args_list))
+        self.assertEqual(list(self.run.iterdir()), [])
+
     def test_target_guard_refuses_host_before_windows_process_query(self):
-        with self.assertRaises(RuntimeError):
-            MODULE.windows_idle_check(environment={'COMPUTERNAME': 'development-host'})
+        with mock.patch.object(MODULE.subprocess, 'run') as run:
+            with self.assertRaises(RuntimeError):
+                MODULE.windows_idle_check(TEST_COMPUTER, TEST_SID,
+                                          environment={'COMPUTERNAME': 'development-host'})
+        run.assert_not_called()
 
     @unittest.skipUnless(os.name == 'nt', 'mock Windows boundary only')
     def test_native_owner_reply_requires_idle_obs_and_free_port(self):
@@ -361,10 +424,16 @@ session.acquire();print("locked",flush=True);sys.stdin.readline();session.releas
                 with mock.patch.object(MODULE.subprocess, 'run', return_value=completed) as run:
                     if refused:
                         with self.assertRaises(RuntimeError):
-                            MODULE.windows_idle_check(environment={'COMPUTERNAME': 'LAPTOP-NP49RG6H'})
+                            MODULE.windows_idle_check(TEST_COMPUTER, TEST_SID,
+                                                      environment={'COMPUTERNAME': TEST_COMPUTER})
                     else:
-                        MODULE.windows_idle_check(environment={'COMPUTERNAME': 'LAPTOP-NP49RG6H'})
-                    self.assertEqual(run.call_count, 1)
+                        MODULE.windows_idle_check(TEST_COMPUTER, TEST_SID,
+                                                  environment={'COMPUTERNAME': TEST_COMPUTER})
+                    run.assert_called_once()
+                    script = base64.b64decode(run.call_args.args[0][-1]).decode('utf-16-le')
+                    query = script.index('Get-CimInstance')
+                    self.assertLess(script.index(TEST_COMPUTER), query)
+                    self.assertLess(script.index(TEST_SID), query)
 
 
 if __name__ == '__main__':
