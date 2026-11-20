@@ -1171,6 +1171,14 @@ fn prepare_process<S: ProcessingSample>(
     transport: &mut Transport<S>,
     cancel: &CancellationToken,
 ) -> Result<(), BackendError> {
+    // Open-bound parity (issue #105, audit X13): `inspect_process` issues
+    // only non-pageable kernel queries (OpenProcess/GetProcessTimes — no
+    // known hang mode), and the worker's startup handshake — including the
+    // 10 s-bounded loopback activation, Initialize and SetEventHandle — is
+    // bounded by `STARTUP_HANDSHAKE_DEADLINE` in `capture::wasapi`, equal
+    // to this backend's `OPEN_DEADLINE`. A wedged loopback open therefore
+    // degrades to a preparation error instead of freezing
+    // `moiren-host-prepare`.
     let target = crate::process_loopback::inspect_process(identity.0).map_err(unsupported)?;
     if target.creation_time_100ns != identity.1 {
         return Err(BackendError::ResourceUnavailable(

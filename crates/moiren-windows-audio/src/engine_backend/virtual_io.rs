@@ -38,6 +38,16 @@ pub(super) fn prepare<S: ProcessingSample>(
     bindings: &mut NodeBindings<S>,
     cancel: &CancellationToken,
 ) -> Result<(VirtualSessions, Vec<NodeId>, Vec<VirtualObservation>), BackendError> {
+    // Known gap (issue #105, audit X13): unlike the native group opens,
+    // virtual boundary preparation has no wall-clock deadline of its own —
+    // the provider contract (`VirtualBoundaryProvider`) requires honoring
+    // cancellation, and the Windows VAD provider's control IO carries its
+    // own 5 s per-operation bound, but nothing bounds the whole pass. No
+    // hang mode is known outside those bounded control operations (the
+    // remaining work is in-memory bookkeeping and thread spawn), and
+    // imposing a deadline would change the public provider trait and the
+    // provider's shared-state locking discipline. Recorded here instead of
+    // restructured; revisit only if a hang is observed.
     let mut sessions = VirtualSessions::default();
     let mut sinks = Vec::new();
     let mut observations = Vec::new();

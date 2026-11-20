@@ -162,6 +162,15 @@ pub(crate) struct Startup {
     sample_rate: u32,
     channels: usize,
 }
+/// Deadline for the startup handshake (issue #105 open bound): the worker
+/// holds the negotiation, process-loopback activation (itself bounded at
+/// 10 s), `Initialize` and `SetEventHandle`, so this wait is the control
+/// thread's only unbounded exposure during capture preparation. A wedged
+/// native call must degrade preparation into an error instead of freezing
+/// `moiren-host-prepare` forever. Deliberately equal to the professional
+/// backend's per-group `OPEN_DEADLINE`.
+const STARTUP_HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Non-RT startup handshake. Native negotiation happens on the worker, so a
 /// rejected format can never be attached to a supposedly running graph.
 pub(crate) fn start_owner(
@@ -197,7 +206,7 @@ pub(crate) fn start_owner(
         started,
         worker: Some(worker),
     };
-    match rx.recv() {
+    match rx.recv_timeout(STARTUP_HANDSHAKE_DEADLINE) {
         Ok(Ok(ready)) => Ok(PreparedCapture {
             session,
             source: ready.source,
@@ -209,11 +218,23 @@ pub(crate) fn start_owner(
             drop(session);
             Err(error)
         }
-        Err(_) => {
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // The worker is wedged inside its native wind-up (issue #105
+            // open bound): signal the stop event and drop the session —
+            // its bounded Drop join detaches the worker, so a wedged COM
+            // call unwinds on the worker thread whenever it finally
+            // returns, instead of freezing `moiren-host-prepare`.
+            let _ = session.request_stop();
+            drop(session);
+            Err(CaptureError::HandshakeTimeout)
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
             // A panic before the handshake must be distinguished from an API
             // failure, and joining must not detach a partially opened stream.
+            // The panicked worker is already unwinding, so the join clears
+            // the deadline quickly; the bound only guards a wedged tail.
             let _ = session.request_stop();
-            session.join()?;
+            session.join_within(std::time::Instant::now() + STARTUP_HANDSHAKE_DEADLINE)?;
             Err(CaptureError::StartupLost)
         }
     }

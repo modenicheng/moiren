@@ -129,6 +129,16 @@ the bounds are layered:
   groups × per-resource deadline. Slow-but-alive teardowns finishing inside
   their own deadlines never reach it.
 
+- **Open, process loopback** — the capture worker's startup handshake
+  (loopback activation, `Initialize`, `SetEventHandle`) is bounded at 10 s
+  (`STARTUP_HANDSHAKE_DEADLINE`, `capture/wasapi.rs`), equal to the native
+  open bound; a wedged loopback open degrades to a preparation error instead
+  of freezing `moiren-host-prepare`.
+- **Known open gap — virtual boundaries** — `virtual_io::prepare` honors
+  cancellation and the Windows VAD provider bounds each control operation at
+  5 s, but the pass as a whole has no wall-clock deadline (no hang mode is
+  known in the remaining in-memory work); see the comment at the gap.
+
 The abandonment semantics are uniform: bounded detection, unbounded
 recovery on the detached thread. What is knowingly not covered by an open
 deadline is recorded in the code where the gap lives.
