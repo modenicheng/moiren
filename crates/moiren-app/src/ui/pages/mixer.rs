@@ -141,12 +141,12 @@ pub(crate) use crate::ui::pages::graph::node_catalog::kind_tint as node_kind_col
 /// The strip subtitle shared by the mixer page and the tray flyout
 /// (issue #121): `"{number} · {kind} · {channels} ch"` with the kind's
 /// display title from the catalog registry instead of its debug format.
-/// Plain English today; the kind titles are runtime i18n table keys per
-/// design 21 §4.
+/// The kind title is a runtime i18n key per design 21 §4, translated here
+/// at render time.
 pub(crate) fn strip_subtitle(number: usize, kind: NodeKind, channels: usize) -> String {
     format!(
         "{number} · {} · {channels} ch",
-        crate::ui::pages::graph::node_catalog::kind_title(kind)
+        t!(crate::ui::pages::graph::node_catalog::kind_title(kind))
     )
 }
 

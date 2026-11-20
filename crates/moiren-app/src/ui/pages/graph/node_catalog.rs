@@ -93,9 +93,10 @@ pub(crate) fn kind_tint(kind: NodeKind) -> Hsla {
 /// their own get a plain name — Source and Sink each cover several
 /// templates, and Plugin has none.
 ///
-/// Plain English today, like the template titles: per design 21 §4 these
-/// strings are runtime i18n table keys, so later translation swaps the
-/// lookup here without touching the call sites.
+/// Runtime i18n table keys per design 21 §4: call sites wrap this in `t!`,
+/// so a Chinese UI renders the translated title while the keys (the English
+/// wording) stay stable here and in `tests/i18n_ledger.rs`'s runtime-key
+/// allowlist.
 pub(crate) fn kind_title(kind: NodeKind) -> &'static str {
     use moiren_core::graph::NodeKind::*;
     match kind {

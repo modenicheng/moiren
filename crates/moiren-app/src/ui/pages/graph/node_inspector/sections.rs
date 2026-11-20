@@ -86,7 +86,7 @@ pub(super) fn source_section(
                     div()
                         .flex()
                         .gap(px(theme::SPACE_1))
-                        .child(button("tone-down", "−10 Hz").on_click(edit(
+                        .child(button("tone-down", t!("−10 Hz")).on_click(edit(
                             cx.entity(),
                             GraphEdit::BindSource {
                                 node: id,
@@ -95,7 +95,7 @@ pub(super) fn source_section(
                                 },
                             },
                         )))
-                        .child(button("tone-up", "+10 Hz").on_click(edit(
+                        .child(button("tone-up", t!("+10 Hz")).on_click(edit(
                             cx.entity(),
                             GraphEdit::BindSource {
                                 node: id,
@@ -308,14 +308,14 @@ pub(super) fn gain_section(
             div()
                 .flex()
                 .gap(px(theme::SPACE_1))
-                .child(button("node-gain-down", "−1 dB").on_click(edit(
+                .child(button("node-gain-down", t!("−1 dB")).on_click(edit(
                     cx.entity(),
                     GraphEdit::SetGain {
                         node: id,
                         gain: step_db(entry.gain, -1., 0., 16.),
                     },
                 )))
-                .child(button("node-gain-up", "+1 dB").on_click(edit(
+                .child(button("node-gain-up", t!("+1 dB")).on_click(edit(
                     cx.entity(),
                     GraphEdit::SetGain {
                         node: id,

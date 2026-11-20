@@ -360,7 +360,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             // Route sends have no upper gain limit by design
                             // (SendParams deliberately accepts any finite
                             // headroom), so the +1 dB step never clamps.
-                            .child(button("route-down", "−1 dB").on_click(edit(
+                            .child(button("route-down", t!("−1 dB")).on_click(edit(
                                 cx.entity(),
                                 GraphEdit::SetSend {
                                     edge: id,
@@ -370,7 +370,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                                     },
                                 },
                             )))
-                            .child(button("route-up", "+1 dB").on_click(edit(
+                            .child(button("route-up", t!("+1 dB")).on_click(edit(
                                 cx.entity(),
                                 GraphEdit::SetSend {
                                     edge: id,
