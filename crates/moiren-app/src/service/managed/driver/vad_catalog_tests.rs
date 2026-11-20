@@ -88,6 +88,8 @@ fn present_observation_adds_the_exact_sampled_mmdevice_id() {
         WindowsEndpointNameObservation {
             native_identity: [1, 1, 1],
             observed_qpc_100ns: None,
+            device_state: None,
+            device_state_error: None,
             mmdevice_id: Some("exact-capture-id".into()),
             name: Some("Windows Mic".into()),
             error: None,

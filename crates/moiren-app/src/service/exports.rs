@@ -5,7 +5,13 @@ use moiren_core::graph::{LogicalGraph, NodeId, NodeKind};
 use moiren_engine::node::VirtualEndpointId;
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+mod diagnostics;
+#[cfg(windows)]
+pub use diagnostics::ExportDiagnostics;
+mod identity;
 mod reconcile;
+pub(crate) use identity::FreshExportIdentity;
 pub(crate) mod runtime;
 pub use reconcile::*;
 #[cfg(test)]
@@ -13,10 +19,21 @@ mod tests;
 
 pub const MAX_EXPORTS: usize = 64;
 
+/// Historical probe evidence from an actual native Removed observation.
+/// It never supplies current presence, action authority or audio admission.
+#[cfg(feature = "vad-integration-probe")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportRetirementEvidence {
+    pub generation: u64,
+    pub native_stamp: [u64; 5],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportDirection {
+    /// Virtual speaker: other apps render here; Moiren receives it as graph input.
     Playback,
+    /// Virtual microphone: Moiren sends graph output; other apps capture from it.
     Microphone,
 }
 
@@ -56,7 +73,7 @@ impl ExportIntent {
     }
 }
 
-fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
+pub(crate) fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), String> {
     if name.trim().is_empty()
         || name.encode_utf16().count() > 63
         || name.chars().any(|c| c < '\u{20}')
@@ -69,6 +86,26 @@ fn validate_export_name_channels(name: &str, channels: usize) -> Result<(), Stri
         return Err("virtual exports support only mono or stereo".into());
     }
     Ok(())
+}
+
+pub(crate) fn append_export(
+    graph: &crate::service::GraphSnapshot,
+    endpoint_id: VirtualEndpointId,
+    direction: ExportDirection,
+    name: &str,
+    channels: usize,
+) -> Result<Vec<ExportIntent>, String> {
+    let mut exports = graph.exports.clone();
+    exports.push(ExportIntent {
+        endpoint_id,
+        direction,
+        name: name.into(),
+        channels,
+        enabled: true,
+        binding: None,
+    });
+    validate_exports(&exports, &graph.graph)?;
+    Ok(exports)
 }
 
 pub fn validate_exports(exports: &[ExportIntent], graph: &LogicalGraph) -> Result<(), String> {
@@ -113,13 +150,20 @@ pub fn validate_export_authorizations(values: &[ExportAuthorization]) -> Result<
 
 #[derive(Default)]
 pub struct ExportService {
+    pub(super) new_identities: BTreeMap<VirtualEndpointId, std::sync::Arc<FreshExportIdentity>>,
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
     pub(super) windows_names: BTreeMap<VirtualEndpointId, WindowsEndpointNameObservation>,
+    #[cfg(windows)]
+    pub(super) diagnostics: BTreeMap<VirtualEndpointId, ExportDiagnostics>,
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) observation_generations: BTreeMap<VirtualEndpointId, u64>,
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) native_retirements: BTreeMap<VirtualEndpointId, ExportRetirementEvidence>,
     /// Content token for the snapshot publisher: bumped by every mutation
     /// that can change the statuses/reconcile projections. The service loop
     /// compares this instead of rebuilding those projections every round,
@@ -163,11 +207,15 @@ impl ExportService {
             return;
         }
         if !available {
+            self.windows_names.clear();
+            #[cfg(windows)]
+            self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]
-            if !self.native_stamps.is_empty() {
-                self.native_stamps.clear();
-                self.mark_changed();
-            }
+            self.native_stamps.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.observation_generations.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.native_retirements.clear();
             for observation in self.observations.values_mut() {
                 // Keep actual resource/gate observations until the adapter
                 // closes them, but recovery must establish fresh admission.
@@ -208,17 +256,14 @@ impl ExportService {
                 "export activity or gate observation contradicts its resource state".into(),
             );
         }
-        // A newer unstamped observation must not inherit a previous raw stamp.
+        // An accepted replacement must not inherit earlier diagnostic evidence.
+        #[cfg(windows)]
+        self.diagnostics.remove(&observation.intent.endpoint_id);
         #[cfg(feature = "vad-integration-probe")]
-        {
-            if self
-                .native_stamps
-                .remove(&observation.intent.endpoint_id)
-                .is_some()
-            {
-                self.mark_changed();
-            }
-        }
+        self.native_stamps.remove(&observation.intent.endpoint_id);
+        #[cfg(feature = "vad-integration-probe")]
+        self.observation_generations
+            .remove(&observation.intent.endpoint_id);
         self.observations
             .insert(observation.intent.endpoint_id, observation);
         // The insert always lands: stale generations are rejected above, so

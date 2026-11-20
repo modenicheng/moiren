@@ -363,9 +363,6 @@ static void FormatsAndNativeWrapsPreserveEveryByte()
 
 static void OneMillisecondQuantumDoesNotScheduleShortPacketTails()
 {
-    // TODO(timer-short-packet-jitter): 48/49-frame packets at 1.1 ms callbacks
-    // can still rebase without progress. Exact 1 ms coverage is not a fix;
-    // add the progress regression with a bounded production overload policy.
     vad::audio::TimerDrivenRing ring = {};
     Check(vad::audio::InitializeTimerDrivenRing(ring, 196, 4, 4096),
         "49-frame packet sets up short-tail timer regression");
@@ -396,6 +393,183 @@ static void OneMillisecondQuantumDoesNotScheduleShortPacketTails()
     const auto late = vad::audio::ScheduleTimerDrivenQuantum(clock, ring, 900000000);
     Check(late.Valid && late.Rebased && late.Due == -10000,
         "a genuine stall rebases one fixed quantum rather than catching up");
+}
+
+template<unsigned Frames>
+static void ShortPacketElapsedJitterProgress()
+{
+    for (bool capture : {false, true}) {
+        PacketFixture<Frames> f(capture);
+        vad::audio::Clock clock = {10000000, 10000000, 0, Frames, true};
+        unsigned completions = 0;
+        unsigned totalTransfers = 0;
+        uint64_t expectedElapsed = 0;
+        for (unsigned tick = 1; tick <= 3000; ++tick) {
+            const auto wake = 10000000 + static_cast<uint64_t>(tick) * 11000;
+            auto now = wake;
+            unsigned callbacks = 0;
+            do {
+                const auto before = f.Ring.PresentedFrames;
+                const auto transfers = f.Transfers;
+                const auto step = vad::audio::PlanTimerDrivenStep(clock, f.Ring, now);
+                Check(step.Valid && !step.Rebased && step.Frames != 0 &&
+                    step.Frames <= Frames && step.Due < 0,
+                    "1.1ms short-packet callback and timely debt service progress without rebasing");
+                unsigned remaining = step.Frames;
+                unsigned spans = 0;
+                while (remaining != 0 && spans < 3) {
+                    vad::audio::TimerDrivenSegment segment = {};
+                    Check(vad::audio::NextTimerDrivenSegment(f.Ring, segment, remaining),
+                        "short callback consumes bounded elapsed frames across packet tails");
+                    const auto pattern = [](uint64_t frame, unsigned byte) {
+                        return static_cast<unsigned char>((frame * 17 + byte) % 251 + 1);
+                    };
+                    if (!capture) {
+                        for (unsigned frame = 0; frame < segment.Frames; ++frame) {
+                            for (unsigned byte = 0; byte < 4; ++byte) {
+                                f.Native[((segment.RingFrameOffset + frame) * 4 + byte) % f.Native.size()] =
+                                    pattern(segment.StartFrame + frame, byte);
+                            }
+                        }
+                    }
+                    Check(vad::audio::TransferTimerSegment(f.Slot, 5, 3, capture,
+                        f.Ring, segment, f.Packet, [&] { f.Scratch.fill(0); },
+                        [&](const vad::audio::TimerDrivenCopySpan& span) {
+                            auto ring = f.Native.data() + span.RingByteOffset;
+                            auto packet = f.Scratch.data() + span.PacketByteOffset;
+                            std::memcpy(capture ? ring : packet, capture ? packet : ring, span.ByteCount);
+                        },
+                        [&](const vad::audio::TimerDrivenCopySpan& span) {
+                            std::memset(f.Native.data() + span.RingByteOffset, 0, span.ByteCount);
+                        },
+                        [&] {
+                            ++f.Transfers;
+                            for (unsigned frame = 0; frame < Frames; ++frame) {
+                                for (unsigned byte = 0; byte < 4; ++byte) {
+                                    const auto value = pattern(segment.PacketSequence * Frames + frame, byte);
+                                    if (capture) { f.Scratch[frame * 4 + byte] = value; }
+                                    else { Check(f.Scratch[frame * 4 + byte] == value,
+                                        "jittered playback retains complete patterned packets in order"); }
+                                }
+                            }
+                        }), "short jitter segment uses production PCM epoch/copy logic");
+                    for (unsigned frame = 0; frame < segment.Frames; ++frame) {
+                        for (unsigned byte = 0; byte < 4; ++byte) {
+                            Check(f.Native[((segment.RingFrameOffset + frame) * 4 + byte) % f.Native.size()] ==
+                                (capture ? pattern(segment.StartFrame + frame, byte) : 0),
+                                "jittered capture preserves every byte; playback clears retired bytes");
+                        }
+                    }
+                    remaining -= segment.Frames;
+                    completions += segment.CompletesPacket ? 1u : 0u;
+                    ++spans;
+                }
+                expectedElapsed = vad::audio::TicksToFrames(now - 10000000, 10000000);
+                Check(remaining == 0 && f.Transfers - transfers <= 1 &&
+                    f.Ring.PresentedFrames == before + step.Frames &&
+                    f.Ring.PresentedFrames <= expectedElapsed &&
+                    clock.BaseFrames == 0 && clock.EpochQpc == 10000000 &&
+                    f.Slot.AdmissionGeneration == 11,
+                    "short jitter preserves elapsed time and epoch within one transfer/three spans");
+                totalTransfers += f.Transfers - transfers;
+                ++callbacks;
+                if (f.Ring.PresentedFrames < expectedElapsed) {
+                    Check(step.Due == -1 && callbacks == 1,
+                        "bounded residual debt requests a minimal due time, not another full quantum");
+                    now += 100; // Timely service is an explicit fixture, not an OS guarantee.
+                }
+            } while (f.Ring.PresentedFrames < expectedElapsed);
+            Check(callbacks <= 2 && f.Ring.PresentedFrames == expectedElapsed,
+                "one timely extra callback drains this bounded jitter fixture");
+            const auto duplicate = vad::audio::PlanTimerDrivenStep(clock, f.Ring, now);
+            Check(duplicate.Valid && !duplicate.Rebased && duplicate.Frames == 0,
+                "duplicate QPC never replays short packets");
+        }
+        Check(completions == f.Ring.PresentedFrames / Frames &&
+            totalTransfers == completions + (capture && f.Ring.PresentedFrames % Frames != 0 ? 1u : 0u),
+            "all complete short packets transfer exactly once");
+    }
+}
+
+template<unsigned Frames>
+static void ShortPacketPersistentOverloadIsCountedNotStarved()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, Frames * 4, 4, 4096), "overload ring");
+    vad::audio::Clock clock = {10000000, 10000000, 0, Frames, true};
+    unsigned rebases = 0;
+    unsigned progressing = 0;
+    for (unsigned tick = 1; tick <= 3000; ++tick) {
+        const auto step = vad::audio::PlanTimerDrivenStep(clock, ring,
+            10000000 + static_cast<uint64_t>(tick) * 11000);
+        Check(step.Valid && step.Frames <= Frames && step.Due < 0,
+            "persistent overload retains one-packet callback bound");
+        if (step.Rebased) {
+            ++rebases;
+            Check(step.Frames == 0, "overload drops time association rather than replaying old PCM");
+        } else {
+            unsigned remaining = step.Frames;
+            for (unsigned spans = 0; remaining != 0 && spans < 3; ++spans) {
+                vad::audio::TimerDrivenSegment segment = {};
+                Check(vad::audio::NextTimerDrivenSegment(ring, segment, remaining), "overload segment");
+                remaining -= segment.Frames;
+            }
+            Check(remaining == 0 && step.Frames != 0, "nonstalled overloaded callback still progresses");
+            ++progressing;
+        }
+    }
+    Check(rebases > 0 && progressing > 2000 && ring.PresentedFrames > 100000,
+        "fixed slow callbacks produce counted overload and real progress, never permanent zero starvation");
+}
+
+static void TimerElapsedDebtThresholdIsExplicit()
+{
+    for (const auto frames : {48u, 49u, 95u, 96u, 480u, 512u, 1250u, 4800u}) {
+        for (const auto align : {2u, 4u, 8u}) {
+            vad::audio::TimerDrivenRing ring = {};
+            Check(vad::audio::InitializeTimerDrivenRing(ring, frames * align, align, 4096),
+                "debt threshold format");
+            const auto threshold = frames < 96 ? frames + 48 : frames;
+            vad::audio::Clock clock = {10000000, 10000000, 0, frames, true};
+            const auto at = vad::audio::FrameQpc(clock, threshold);
+            const auto admitted = vad::audio::PlanTimerDrivenStep(clock, ring, at);
+            Check(admitted.Valid && !admitted.Rebased && admitted.Frames == frames &&
+                (frames < 96 ? admitted.Due == -1 : admitted.Due < -1) &&
+                clock.EpochQpc == 10000000,
+                "only sub-two-quantum packets receive bounded residual debt; legacy threshold stays inclusive");
+            auto remaining = admitted.Frames;
+            while (remaining != 0) {
+                vad::audio::TimerDrivenSegment segment = {};
+                Check(vad::audio::NextTimerDrivenSegment(ring, segment, remaining), "threshold advance");
+                remaining -= segment.Frames;
+            }
+            const auto residual = vad::audio::PlanTimerDrivenStep(clock, ring, at);
+            Check(residual.Valid && !residual.Rebased && residual.Frames == (frames < 96 ? 48u : 0u),
+                "same-QPC debt callback consumes only admitted elapsed remainder");
+
+            ring = {};
+            Check(vad::audio::InitializeTimerDrivenRing(ring, frames * align, align, 4096), "stall ring");
+            clock = {10000000, 10000000, 0, frames, true};
+            const auto tooLate = vad::audio::FrameQpc(clock, threshold + 1);
+            const auto stalled = vad::audio::PlanTimerDrivenStep(clock, ring, tooLate);
+            Check(stalled.Valid && stalled.Rebased && stalled.Frames == 0 &&
+                stalled.Due == -10000 && ring.PresentedFrames == 0 &&
+                clock.BaseFrames == 0 && clock.EpochQpc == tooLate,
+                "one frame over bounded debt discards without old-frame catch-up");
+            const auto duplicate = vad::audio::PlanTimerDrivenStep(clock, ring, tooLate);
+            Check(duplicate.Valid && !duplicate.Rebased && duplicate.Frames == 0,
+                "same-QPC stalled retry cannot repeatedly invalidate the epoch");
+        }
+    }
+
+    vad::audio::TimerDrivenRing narrow = {};
+    Check(vad::audio::InitializeTimerDrivenRing(narrow, 48 * 8, 8, 128), "narrow mapped ring");
+    Check(narrow.MappedFrames == 48, "narrow fixture has no unused native history");
+    vad::audio::Clock clock = {10000000, 10000000, 0, 48, true};
+    const auto step = vad::audio::PlanTimerDrivenStep(clock, narrow,
+        vad::audio::FrameQpc(clock, 49));
+    Check(step.Valid && step.Rebased && step.Frames == 0,
+        "extra pending allowance can never exceed available native mapping history");
 }
 
 
@@ -560,6 +734,11 @@ static void TimerElapsedBudgetsRespectAllBoundaries()
 
 int main()
 {
+    ShortPacketElapsedJitterProgress<48>();
+    ShortPacketElapsedJitterProgress<49>();
+    ShortPacketPersistentOverloadIsCountedNotStarved<48>();
+    ShortPacketPersistentOverloadIsCountedNotStarved<49>();
+    TimerElapsedDebtThresholdIsExplicit();
     TimerJitterPreservesOneBoundedPacket();
     ElapsedHalfPacketRejectsGateAndStreamReplacement();
     ElapsedLongStallDiscardsWithoutCompletionOrCatchUp();

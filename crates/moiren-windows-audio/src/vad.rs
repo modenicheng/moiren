@@ -25,6 +25,10 @@ mod discovery;
 mod pcm;
 #[cfg(windows)]
 mod provider;
+#[cfg(windows)]
+mod publication_identity;
+#[cfg(windows)]
+pub use publication_identity::NewEndpointIdentity;
 
 #[cfg(windows)]
 pub use client::{ClientError, ControlClient};
@@ -39,6 +43,20 @@ pub use pcm_bridge::{PcmBoundaryError, PcmMicrophoneBridge, PcmPlaybackBridge};
 pub use pcm_slots::PcmTicket;
 #[cfg(windows)]
 pub use provider::WindowsVadProvider;
+#[cfg(windows)]
+pub use provider::{
+    PublicationIdentity, PublicationSnapshot, VadExportDiagnosticProvenance, VadExportObservation,
+    VadPcmTelemetrySnapshot,
+};
+#[cfg(windows)]
+pub use provider::{
+    VadCaptureProvider, VadOutputCaptureArtifact, VadOutputCaptureHandle, VadOutputCaptureIdentity,
+    VadOutputCapturePacket,
+};
+#[cfg(windows)]
+pub use provider::{
+    VadInputCaptureArtifact, VadInputCaptureHandle, VadInputCaptureIdentity, VadInputCapturePacket,
+};
 
 pub use protocol::{
     ABI_VERSION, CAP_AUDIO, CAP_CREATE_DEFERRED, CAP_PCM, CAP_POLICY_STAGED, CAP_RAW_PDO,
@@ -49,6 +67,11 @@ pub use protocol::{
     MAX_STREAMS_PER_PIN, PCM_HEADER_SIZE, PcmPacketStamp, PcmShape, PdoState, ProtocolError,
     REQUEST_SLOTS, RuntimePdoToken, SAMPLE_RATE, SNAPSHOT_SIZE, SampleFormat, StableEndpointId,
     StreamState, capabilities_request, create_request, endpoint_request, gate_request,
+};
+pub use protocol::{
+    CAP_PUBLICATION_IDENTITY, CREATE_IDENTITY_SIZE, IDENTITY_CAPABILITIES_SIZE, IDENTITY_VERSION,
+    IOCTL_CREATE_IDENTITY, IOCTL_IDENTITY_CAPABILITIES, IdentityCapabilities, PublicationMode,
+    create_identity_request, identity_capabilities_request,
 };
 
 #[cfg(test)]

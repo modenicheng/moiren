@@ -11,6 +11,7 @@ docs/development/local/          # gitignored
   machines.md                    # 本机/测试机/网络
   local-quirks.md                # 本机 cargo/GPUI/Miri/测试坑
   hardware.md                    # 个人硬件与验收记录
+  obs-target.json                # 专用 OBS 安装与采集端点
 ```
 
 ## 填写原则
@@ -49,6 +50,26 @@ docs/development/local/          # gitignored
 - 主机/接口/监听设备：`<...>`
 - 实机验收清单与结果：`<...>`
 - soak 数据位置：`<...>`
+
+### obs-target.json
+
+`scripts/obs-reuse.py --check` 和 OBS 采集会读取脚本所在仓库的
+`docs/development/local/obs-target.json`。如果单独部署测试脚本，用
+`MOIREN_OBS_TARGET_PROFILE` 指定本地配置的绝对路径。配置为 UTF-8 JSON，
+以下示例的值都需替换。
+
+```json
+{
+  "computer_name": "<Windows 计算机名>",
+  "user_sid": "<运行测试的 Windows 账户 SID>",
+  "installation_root": "<专用 OBS 安装根目录的绝对路径>",
+  "executable_sha256": "<bin/64bit/obs64.exe 的 SHA-256>",
+  "capture_endpoint_id": "<Windows 音频渲染端点的完整 ID>"
+}
+```
+
+`--check` 只检查目标身份、可执行文件哈希、OBS 进程和 WebSocket 端口。
+采集使用配置中的端点 ID，不能选择系统默认端点。
 
 ## 本地代理记忆
 

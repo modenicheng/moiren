@@ -66,6 +66,38 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable fmt --all -- --check
+      - name: Test offline VAD rebase evidence association
+        run: python3 scripts/tests/vad-clock-rebase.tests.py
+      - name: Test offline VAD capture QPC evidence association
+        run: python3 scripts/tests/vad-capture-qpc.tests.py
+      - name: Test offline VAD removal stage evidence association
+        run: python3 scripts/tests/vad-removal-stages.tests.py
+      - name: Test closed-run host delivery and retained binary transport
+        run: |
+          python3 -B scripts/tests/vad-delivery.tests.py
+          python3 -B scripts/tests/vad-delivery-transport.tests.py
+          python3 -B scripts/tests/vad-file-handoff.tests.py
+          python3 -B scripts/tests/vad-diagnostic.tests.py
+      - name: Test dedicated OBS path reuse and configuration ownership
+        run: python3 scripts/tests/obs-reuse.tests.py
+      - name: Test fixed-path OBS acquisition setup and graceful cleanup
+        run: python3 -B scripts/tests/obs-acquisition.tests.py
+      - name: Test bounded OBS recording transition ownership
+        run: python3 -B scripts/tests/obs-recording.tests.py
+      - name: Test fixed-path OBS capture session integration
+        run: python3 -B scripts/tests/obs-capture-session.tests.py
+      - name: Test authenticated bounded OBS websocket protocol
+        run: python3 -B scripts/tests/obs-websocket.tests.py
+      - name: Test offline indexed model interval spacing
+        run: python3 scripts/tests/vad-indexed-spacing.tests.py
+      - name: Test independent SRC scalar archive readback
+        run: python3 scripts/tests/vad-src-archive.tests.py
+      - name: Test reset-aware callback-local SRC phase intervals
+        run: python3 scripts/tests/vad-src-phase.tests.py
+      - name: Test bounded two-FIR SRC dependency envelopes
+        run: python3 scripts/tests/vad-src-cascade.tests.py
+      - name: Test closed Process owner category ledgers
+        run: python3 scripts/tests/process-owner-ledger.tests.py
   test:
     needs: changes
     if: needs.changes.outputs.any == 'true'
@@ -98,6 +130,39 @@ jobs:
             libgtk-3-dev libfontconfig1-dev libxkbcommon-x11-dev \
             libwayland-dev libvulkan-dev libxdo-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Test removal preparation without scheduler or native tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $engines = @("$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe", "$PSHOME\pwsh.exe")
+          $tests = @(
+            'test-finite-tool.ps1', 'test-task-boundary.ps1', 'test-task-retirement.ps1',
+            'test-trace-boundary.ps1', 'test-trace-finite.ps1', 'test-trace-query.ps1',
+            'test-trace-readback.ps1', 'test-trace-native.ps1', 'test-trace-session.ps1',
+            'test-trace-composition.ps1', 'test-trace-decode.ps1', 'test-finish-session.ps1',
+            'test-probe-boundary.ps1', 'test-worker-boundary.ps1', 'test-collector-boundary.ps1',
+            'test-worker-entry.ps1', 'test-readonly-preflight.ps1', 'test-preflight-collector.ps1',
+            'test-read-wrapper.ps1', 'test-collector-worker.ps1', 'test-preflight-session.ps1',
+            'test-session-identity.ps1', 'test-target-readiness.ps1', 'test-preflight-entry.ps1',
+            'test-diagnostic-lease.ps1', 'test-run-inputs.ps1', 'test-safety-audit.ps1',
+            'test-diagnostic-controller.ps1', 'test-diagnostic-entry.ps1', 'test-diagnostic-lifetime.ps1',
+            'test-native-admission.ps1', 'test-diagnostic-release.ps1',
+            'test-native-guard-routing.ps1', 'test-native-query-admission.ps1',
+            'test-native-admission-lifetime.ps1', 'test-closed-controller.ps1',
+            'test-closed-export.ps1', 'test-closed-entry.ps1', 'test-closed-finish.ps1',
+            'test-delivery-finalize.ps1', 'test-delivery-composition.ps1',
+            'test-run-manifest.ps1', 'test-entry-launch.ps1', 'test-diagnostic-handoff.ps1'
+          )
+          foreach ($engine in $engines) {
+            foreach ($test in $tests) {
+              & $engine -NoLogo -NoProfile -NonInteractive -File "scripts/vad-removal/$test"
+              if ($LASTEXITCODE -ne 0) { throw "$test failed under $engine ($LASTEXITCODE)." }
+            }
+          }
+          # The real worker-token check requires a nonzero interactive session;
+          # run test-task-process.ps1 and test-worker-process.ps1 explicitly on
+          # the non-elevated dev host. Neither enters native audio or scheduler.
       - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
       # cargo -p takes one package per flag, so expand the list first.
       # No separate `cargo check` pass: `cargo test` compiles the same targets
@@ -117,6 +182,12 @@ jobs:
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
+      # The Process-collection B path and the shared render preflight keep
+      # portable failure-first suites inside examples; `cargo test` alone does
+      # not execute example tests (they need an explicit --example).
+      - name: Test latency-probe and render-preflight example contracts
+        if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
+        run: cargo +stable test --locked -p moiren-windows-audio --example e2e_latency_probe --example shared_render_preflight
       - name: Test VAD probe contracts without devices
         if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
         run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native --example vad_active_lifecycle

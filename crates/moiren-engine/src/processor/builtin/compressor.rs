@@ -345,6 +345,7 @@ mod signal_tests {
                 }
                 host.begin_block();
                 let ctx = ProcessContext {
+                    execution: None,
                     timeline_epoch: 1,
                     timeline_start: block * 4,
                     frames: 4,

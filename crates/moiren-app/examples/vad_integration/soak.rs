@@ -191,6 +191,8 @@ pub(super) struct PcmSoak {
     pub expected: [f32; 2],
     pub settling_until_ms: u64,
     pub settling_duration_ms: u64,
+    #[serde(skip)]
+    settling_frames_remaining: u64,
     pub settling_frames: u64,
     pub settling_discontinuities: u64,
     pub settling_nonfinite_frames: u64,
@@ -223,6 +225,7 @@ impl PcmSoak {
             expected,
             settling_until_ms: 0,
             settling_duration_ms: 0,
+            settling_frames_remaining: 0,
             settling_frames: 0,
             settling_discontinuities: 0,
             settling_nonfinite_frames: 0,
@@ -264,7 +267,7 @@ impl PcmSoak {
     fn observe_packet(
         &mut self,
         now_ms: u64,
-        samples: &[f32],
+        mut samples: &[f32],
         discontinuity: bool,
     ) -> anyhow::Result<()> {
         // Check the previous packet's age before accepting a fresh packet so a
@@ -291,10 +294,27 @@ impl PcmSoak {
             .context("PCM soak captured-frame counter overflow")?;
         self.last_packet_ms = Some(now_ms);
         self.last_packet_observed_ms = Some(now_ms);
-        if now_ms < self.settling_until_ms {
-            self.settling_frames += samples.len() as u64 / 2;
-            self.settling_discontinuities += u64::from(discontinuity);
-            for frame in samples.as_chunks::<2>().0 {
+        // Settling allows the previous waveform to drain. The capture stream
+        // stays open across a pattern change, so a discontinuity still fails.
+        if discontinuity {
+            self.quality_failed = true;
+            self.glitch
+                .record(now_ms, "pcm_capture_discontinuity", packet_frames);
+        }
+        let settling_frames = if now_ms < self.settling_until_ms {
+            packet_frames.min(self.settling_frames_remaining)
+        } else {
+            0
+        };
+        if settling_frames != 0 {
+            // Arrival timestamps can put an extra packet inside the wall
+            // window. Exclude only the frames budgeted for this source change.
+            let (settling, steady) = samples.split_at(settling_frames as usize * 2);
+            self.settling_frames_remaining -= settling_frames;
+            self.settling_frames += settling_frames;
+            // Attribute each discontinuity to one set of sample counters.
+            self.settling_discontinuities += u64::from(discontinuity && steady.is_empty());
+            for frame in settling.as_chunks::<2>().0 {
                 if frame.iter().any(|sample| !sample.is_finite()) {
                     self.settling_nonfinite_frames += 1;
                 } else if frame
@@ -311,10 +331,13 @@ impl PcmSoak {
                 }
             }
             ensure!(
-                samples.iter().all(|sample| sample.is_finite()),
+                settling.iter().all(|sample| sample.is_finite()),
                 "nonfinite PCM during fixed soak settling"
             );
-            return Ok(());
+            if steady.is_empty() {
+                return Ok(());
+            }
+            samples = steady;
         }
         let before = self.current_window.clone();
         self.current_window
@@ -339,11 +362,6 @@ impl PcmSoak {
         // Quality defects are recorded and the soak continues: the finish
         // gates still fail the phase, but the run keeps collecting the full
         // duration's jitter, recovery and resource evidence.
-        if discontinuity {
-            self.quality_failed = true;
-            self.glitch
-                .record(now_ms, "pcm_capture_discontinuity", packet_frames);
-        }
         let silent = current.silent_frames - before.silent_frames;
         if silent > 0 {
             self.quality_failed = true;
@@ -374,9 +392,11 @@ impl PcmSoak {
         self.current_window = Observation::default();
         self.expected = expected;
         self.settling_until_ms = now_ms + SETTLE_MS;
+        let settling_ms = SETTLE_MS.min(self.requested_ms.saturating_sub(now_ms));
+        self.settling_frames_remaining = settling_ms * SOAK_SAMPLE_RATE / 1_000;
         self.settling_duration_ms = self
             .settling_duration_ms
-            .checked_add(SETTLE_MS.min(self.requested_ms.saturating_sub(now_ms)))
+            .checked_add(settling_ms)
             .context("PCM soak settling duration overflow")?;
         Ok(())
     }
@@ -1011,6 +1031,15 @@ pub(super) fn analyze_window(
     }
     window
 }
+#[derive(Clone, Debug, Serialize)]
+struct CaptureGap {
+    packet_number: u64,
+    expected_device_frame: u64,
+    observed_device_frame: u64,
+    previous_qpc_100ns: Option<u64>,
+    observed_qpc_100ns: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct CapturePosition {
     pub packets: u64,
@@ -1022,6 +1051,8 @@ pub(super) struct CapturePosition {
     pub first_device_frame: Option<u64>,
     pub last_device_frame: Option<u64>,
     pub last_qpc_100ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_gap: Option<CaptureGap>,
     expected_next_frame: Option<u64>,
 }
 
@@ -1048,6 +1079,15 @@ impl CapturePosition {
         if let Some(expected) = self.expected_next_frame {
             if frame > expected {
                 self.inferred_gap_frames += frame - expected;
+                // Keep the adjacent packet coordinates for trace alignment
+                // after later packets advance the rolling position and QPC.
+                self.first_gap.get_or_insert(CaptureGap {
+                    packet_number: self.packets,
+                    expected_device_frame: expected,
+                    observed_device_frame: frame,
+                    previous_qpc_100ns: self.last_qpc_100ns,
+                    observed_qpc_100ns: qpc,
+                });
             } else if frame < expected {
                 self.regressions += 1;
             }
@@ -1278,8 +1318,64 @@ mod tests {
         assert_eq!(unproven.glitch.glitch_count, 1);
         assert!(unproven.glitch.glitches[0].kind == "pcm_window_failed_at_source_change");
         let mut finite = PcmSoak::new(60_000, EXPECTED);
-        finite.settling_until_ms = 1_000;
+        finite.change_pattern(0, SECOND_EXPECTED).unwrap();
         assert!(finite.observe(0, &[f32::NAN, 0.0], false).is_err());
+        assert_eq!(finite.settling_nonfinite_frames, 1);
+    }
+
+    #[test]
+    fn packet_crossing_the_settling_frame_limit_validates_its_suffix() {
+        let old_packet = EXPECTED.repeat(480);
+        let mut crossing_packet = EXPECTED.to_vec();
+        crossing_packet.extend(SECOND_EXPECTED.repeat(479));
+        for discontinuity in [false, true] {
+            let mut pcm = PcmSoak::new(3_000, EXPECTED);
+            for now in (0..1_000).step_by(10) {
+                pcm.observe(now, &old_packet, false).unwrap();
+            }
+            pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
+            for now in (1_000..1_990).step_by(10) {
+                pcm.observe(now, &old_packet, false).unwrap();
+            }
+            pcm.observe(1_990, &old_packet[..479 * 2], false).unwrap();
+            pcm.observe(1_999, &crossing_packet, discontinuity).unwrap();
+            assert_eq!(pcm.settling_frames, 48_000);
+            assert_eq!(pcm.settling_other_finite_frames, 48_000);
+            assert_eq!(pcm.settling_discontinuities, 0);
+            assert_eq!(pcm.validated.matching_frames, 48_479);
+            assert_eq!(pcm.validated.discontinuities, u64::from(discontinuity));
+            assert_eq!(pcm.quality_failed, discontinuity);
+        }
+    }
+
+    #[test]
+    fn discontinuity_during_source_settling_fails_pcm_soak() {
+        let original_packet = EXPECTED.repeat(480);
+        let changed_packet = SECOND_EXPECTED.repeat(480);
+        for discontinuity in [false, true] {
+            let mut pcm = PcmSoak::new(3_000, EXPECTED);
+            for now in (0..1_000).step_by(10) {
+                pcm.observe(now, &original_packet, false).unwrap();
+            }
+            pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
+            for now in (1_000..2_000).step_by(10) {
+                pcm.observe(now, &original_packet, discontinuity && now == 1_500)
+                    .unwrap();
+            }
+            for now in (2_000..=3_000).step_by(10) {
+                pcm.observe(now, &changed_packet, false).unwrap();
+            }
+
+            assert_eq!(pcm.settling_frames, 48_000);
+            assert_eq!(pcm.settling_discontinuities, u64::from(discontinuity));
+            assert_eq!(pcm.validated.discontinuities, 0);
+            assert_eq!(pcm.finish(3_000).is_err(), discontinuity);
+            assert_eq!(pcm.completed, !discontinuity);
+            assert_eq!(pcm.glitch.glitch_count, u64::from(discontinuity));
+            if discontinuity {
+                assert_eq!(pcm.glitch.glitches[0].kind, "pcm_capture_discontinuity");
+            }
+        }
     }
 
     #[test]
@@ -1393,6 +1489,32 @@ mod tests {
     }
 
     #[test]
+    fn capture_position_preserves_the_first_gap_for_trace_alignment() {
+        let mut position = CapturePosition::default();
+        assert!(!position.observe(0, 100_000, 480, false, false));
+        assert!(position.observe(960, 200_000, 480, false, true));
+        // The first trusted packet after an untrusted timestamp is a new anchor.
+        assert!(!position.observe(1_440, 300_000, 480, false, false));
+        assert!(position.first_gap.is_none());
+        assert!(position.observe(2_400, 500_000, 480, false, false));
+        assert!(position.observe(3_840, 800_000, 480, true, false));
+        assert!(!position.observe(4_320, 900_000, 480, false, false));
+        assert_eq!(position.inferred_gap_frames, 1_440);
+        assert_eq!(position.last_qpc_100ns, Some(900_000));
+        let evidence = serde_json::to_value(position).unwrap();
+        assert_eq!(
+            evidence["first_gap"],
+            serde_json::json!({
+                "packet_number": 4,
+                "expected_device_frame": 1_920,
+                "observed_device_frame": 2_400,
+                "previous_qpc_100ns": 300_000,
+                "observed_qpc_100ns": 500_000,
+            })
+        );
+    }
+
+    #[test]
     fn inaccurate_stalled_or_regressing_native_clock_cannot_qualify() {
         let mut clock = ClockProgress {
             frequency: 48_000,
@@ -1449,6 +1571,47 @@ mod tests {
             pcm.coverage_ratio,
             Some(pcm.validated.total_frames as f64 / 96_000.0)
         );
+    }
+
+    #[test]
+    fn pcm_coverage_bounds_settling_in_frames_when_packet_arrivals_jitter() {
+        let old_packet = EXPECTED.repeat(480);
+        let new_packet = SECOND_EXPECTED.repeat(480);
+        for missing_packet in [false, true] {
+            let mut pcm = PcmSoak::new(3_000, EXPECTED);
+            for now in (0..1_000).step_by(10) {
+                pcm.observe(now, &old_packet, false).unwrap();
+            }
+            pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
+            for now in (1_000..2_000).step_by(10) {
+                pcm.observe(now, &new_packet, false).unwrap();
+            }
+            // A packet arrives early near the wall-time boundary. Its PCM is
+            // contiguous, so it can still be validated after the frame budget.
+            pcm.observe(1_999, &new_packet, false).unwrap();
+            for now in (2_020..=3_000).step_by(10) {
+                if !missing_packet || now != 2_020 {
+                    pcm.observe(now, &new_packet, false).unwrap();
+                }
+            }
+            let result = pcm.finish(3_000);
+            if missing_packet {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("validated PCM frame coverage too low")
+                );
+                assert!(!pcm.completed);
+            } else {
+                result.unwrap();
+                assert!(pcm.completed);
+                assert_eq!(pcm.captured_frames, 144_000);
+                assert_eq!(pcm.validated.total_frames, 96_000);
+            }
+            assert_eq!(pcm.settling_frames, 48_000);
+            assert_eq!(pcm.coverage_required_frames, Some(96_000));
+        }
     }
 
     #[test]

@@ -7,13 +7,16 @@
 #include "Trace.h"
 #include "Lifecycle.h"
 #include "Ownership.h"
+#include "PcmDiagnostics.h"
+#include "UnservedDiagnostics.h"
+#include "audio/ClockDiagnostic.h"
+#include "audio/CaptureDiagnostic.h"
+#include "PlaybackCopyDiagnostic.h"
+#include "NativePlaybackDiagnostic.h"
+#include "RemovalDiagnostic.h"
+#include "EndpointReference.h"
 
 extern const GUID VadControlInterface;
-
-// Published audio identity: the ACX circuit name and the registered device
-// interface reference string are one value shared by Policy and the audio
-// circuit, so they cannot drift apart.
-inline constexpr WCHAR VadAudioReference[] = L"MoirenEndpoint";
 
 struct VAD_SHARED {
     // Root cleanup can precede the final destruction of a referenced PDO.
@@ -21,6 +24,15 @@ struct VAD_SHARED {
     KSPIN_LOCK Lock;
     volatile LONG References;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::RemovalDiagnostic RemovalDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::audio::CaptureDiagnostic CaptureDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+    vad::PlaybackCopyDiagnostic PlaybackCopyDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::NativePlaybackDiagnostic NativePlaybackDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+#endif
     WDFDEVICE Children[MOIREN_VAD_MAX_ENDPOINTS]; // Owns one WDF reference.
     WDFQUEUE PcmQueues[MOIREN_VAD_MAX_ENDPOINTS];
     EX_RUNDOWN_REF PcmRundown;
@@ -58,6 +70,15 @@ struct VAD_CHILD {
     // can release it without touching the root device.
     UNICODE_STRING PolicyInterfaces[3];
     ULONG PolicyInterfaceCount;
+    // Child-owned runtime publication reference, not durable adoption state.
+    // Negotiated identity requests resolve/adopt and persist independently of
+    // display text; v2 CREATE retains its historical locked-name derivation.
+    // All staged categories and ACX consume this same storage. PnP serialization
+    // and the worker flush order publication before circuit construction.
+    WCHAR PolicyReference[vad::EndpointReferenceUnits];
+    // Immutable pre-enumeration request values, not borrowed root ownership.
+    uint32_t PublicationMode; // Zero is legacy v2 compatibility, never fresh.
+    MOIREN_VAD_ENDPOINT_ID InstallationId;
 };
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_CHILD, VadChild)
 
@@ -80,7 +101,8 @@ void VadSharedRelease(VAD_SHARED* shared);
 // Caller holds Admin, never Shared->Lock, across PnP/registry DDIs.
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS VadCreateChild(WDFDEVICE root, const MOIREN_VAD_CREATE_REQUEST& request,
-    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot);
+    MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot, uint32_t publicationMode = 0,
+    const MOIREN_VAD_ENDPOINT_ID* installation = nullptr);
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS VadRemoveChild(WDFDEVICE root, uint64_t id,
     MOIREN_VAD_ENDPOINT_SNAPSHOT* snapshot);
@@ -100,7 +122,12 @@ bool VadAudioIsStreamCurrent(WDFDEVICE child, uint64_t generation);
 void VadAudioReleaseStream(WDFDEVICE child);
 void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
     ULONG blockAlign, ULONG frames, ULONG state);
+void VadAudioRecordRun(WDFDEVICE child, uint64_t generation, uint64_t qpc);
 void VadAudioPrepareFailed(WDFDEVICE child, NTSTATUS status);
+// Bounded state collection only; final destroy may run above PASSIVE_LEVEL.
+void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
+    bool hasStatus = false, NTSTATUS status = 0, bool nativeCall = false);
+void VadAudioRecordRelease(WDFDEVICE child, bool returned, NTSTATUS status, bool nativeCall);
 
 struct VAD_PCM_REQUEST {
     MOIREN_VAD_PCM_HEADER Header;
@@ -113,6 +140,24 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_PCM_REQUEST, VadPcmRequest)
 VAD_PAGE NTSTATUS VadPcmInitialize(WDFDEVICE device);
 VAD_PAGE void VadPcmShutdown(VAD_SHARED* shared);
 VAD_PAGE NTSTATUS VadPcmSubmit(WDFDEVICE device, WDFREQUEST request, ULONG code);
+// Passive stack scope: exclude submissions from epoch publication through purge.
+// Rundown protects queue access; normal kernel APCs stay disabled until release.
+class VadPcmDrainGuard {
+public:
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE VadPcmDrainGuard(VAD_SHARED* shared, ULONG index);
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE ~VadPcmDrainGuard();
+    _IRQL_requires_(PASSIVE_LEVEL)
+    VAD_PAGE void Purge(bool restart);
+    VadPcmDrainGuard(const VadPcmDrainGuard&) = delete;
+    VadPcmDrainGuard& operator=(const VadPcmDrainGuard&) = delete;
+private:
+    void* operator new(size_t) = delete;
+    void* operator new[](size_t) = delete;
+    VAD_SHARED* Shared = nullptr;
+    ULONG Index;
+};
 VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart);
 struct VAD_PCM_COMPLETION {
     WDFREQUEST Request;
@@ -122,6 +167,12 @@ struct VAD_PCM_COMPLETION {
 struct VAD_PCM_BATCH {
     vad::CompletionBatch<VAD_PCM_COMPLETION, MOIREN_VAD_REQUEST_SLOTS> Completions;
     VAD_SHARED* Shared; // Owns PCM rundown until completion, not just until copy.
+    vad::CallbackBoundary Callback; // Stack-only timing evidence; never changes scheduling.
+    // Successful capture copy only; no request or mapped buffer is retained.
+    bool CaptureCopied;
+    uint64_t CaptureGateEpoch;
+    uint64_t CaptureRequestSequence;
+    vad::audio::CapturePrefix CapturePrefix;
 };
 // DPC-safe bounded packet copy. Caller must finish the batch after releasing
 // ALL spin locks. Neither copying nor collecting completes an IRP.

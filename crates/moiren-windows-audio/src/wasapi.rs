@@ -3,12 +3,24 @@
 use crate::bridge::unsupported;
 use crate::capture_packet::borrow_capture_packet;
 use crate::codec::SampleCodec;
-use crate::native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame};
+use crate::latency::{
+    NativeStreamTiming, PreparedRenderQueue, RenderQueuePolicy, prepare_render_queue,
+    render::{RenderPaddingObserver, RenderPaddingOwner, RenderPaddingSample},
+    shared_period::{
+        SharedFallbackReason, SharedFormatInfo, SharedInitializationApi, SharedPeriodCaps,
+        SharedPeriodReport,
+    },
+};
+use crate::native::{
+    ExclusivePeriodEvidence, ExclusivePeriodEvidenceHandle, NativeDeviceClockObservation,
+    NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame, observe_exclusive_initialize,
+};
 use crate::negotiation::{
     EnginePeriods, MAX_BUFFER_FRAMES, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ, MIN_SAMPLE_RATE_HZ,
-    SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, client3_rejects_format, exclusive_format_supported,
-    exclusive_frames_duration, friendly_name, initialize_exclusive, initialize_legacy_shared,
-    parse_descriptor, shared_engine_periods,
+    SUBFORMAT_FLOAT, SUBFORMAT_PCM, StageError, aligned_shared_buffer_duration,
+    exclusive_format_supported, exclusive_frames_duration, friendly_name, initialize_exclusive,
+    initialize_legacy_shared, initialize_legacy_shared_with_duration, parse_descriptor,
+    shared_engine_periods, shared_initialize_retryable,
 };
 use crate::win32_raii::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
@@ -33,12 +45,50 @@ use windows::{
     core::{HSTRING, Interface, PCWSTR, implement},
 };
 
+mod render_evidence;
+#[cfg(test)]
+#[path = "wasapi/render_evidence_tests.rs"]
+mod render_evidence_tests;
+use crate::render_evidence::RenderEventKind;
+use render_evidence::{
+    RenderOperationEvidence, release_render_evidence, stage_render_evidence,
+    validate_render_evidence_attachment,
+};
+
 #[derive(Debug, Clone)]
 pub struct WasapiOptions {
     pub endpoint_id: String,
     pub sample_rate: u32,
     pub device: DeviceOptions,
     pub input: bool,
+    /// Opt-in queried minimum request plus preparation-only receipt. Requires
+    /// input Exclusive mode without an explicit period; never used by read().
+    pub exclusive_period_evidence: Option<ExclusivePeriodEvidenceHandle>,
+}
+
+pub(crate) fn native_period_request_supported(device: DeviceOptions, input: bool) -> bool {
+    // Diagnostic-only exact render request; never widen the app's presets or
+    // admit this period for Shared, capture, ASIO or a default library build.
+    if cfg!(feature = "vad-probe")
+        && !input
+        && device.backend == moiren_engine::audio_config::AudioBackend::Wasapi
+        && device.mode == DeviceMode::Exclusive
+        && device.period_frames == Some(144)
+    {
+        return true;
+    }
+    if device.backend == moiren_engine::audio_config::AudioBackend::Wasapi
+        && device.mode == DeviceMode::Shared
+    {
+        return device.period_frames.is_none_or(|frames| {
+            u32::try_from(frames).is_ok_and(|frames| {
+                moiren_engine::audio_config::SHARED_PERIOD_RANGE.contains(&frames)
+            })
+        });
+    }
+    device
+        .period_frames
+        .is_none_or(|frames| (64..=4096).contains(&frames) && frames.is_power_of_two())
 }
 
 fn capture_packet_frames(
@@ -154,9 +204,20 @@ pub(super) fn resolve_endpoint(
 pub struct WasapiStream {
     capture: Option<IAudioCaptureClient>,
     render: Option<IAudioRenderClient>,
+    device_clock: Option<PreparedDeviceClock>,
+    capture_evidence: Option<crate::capture::PcmEvidenceWriter>,
+    render_evidence: Option<crate::render_evidence::RenderEvidenceWriter>,
+    render_evidence_clock: Option<crate::latency::QpcClock>,
+    last_render_padding: Option<u32>,
     client: IAudioClient,
     event: OwnedHandle,
     info: NativeStreamInfo,
+    timing: NativeStreamTiming,
+    shared_period: Option<SharedPeriodReport>,
+    exclusive_period: Option<ExclusivePeriodEvidence>,
+    render_queue: Option<PreparedRenderQueue>,
+    padding_observer: Option<RenderPaddingObserver>,
+    padding_owner: Option<RenderPaddingOwner>,
     codec: SampleCodec,
     mode: DeviceMode,
     started: bool,
@@ -301,6 +362,9 @@ impl Drop for EndpointNotificationRegistration {
 }
 
 impl WasapiStream {
+    pub fn exclusive_period(&self) -> Option<ExclusivePeriodEvidence> {
+        self.exclusive_period
+    }
     pub fn open(options: WasapiOptions) -> Result<Self, BackendError> {
         let requested_mode = options.device.mode;
         let requested_period = options.device.period_frames;
@@ -322,13 +386,22 @@ impl WasapiStream {
     /// later phases negotiate, its decoded codec pair, and whether Shared mode
     /// will convert between the client format and the endpoint mix.
     fn open_inner(options: WasapiOptions) -> Result<Self, BackendError> {
+        if options.exclusive_period_evidence.is_some()
+            && (options.device.mode != DeviceMode::Exclusive || !options.input)
+        {
+            return Err(unsupported(
+                "Exclusive period evidence requires an input Exclusive WASAPI stream",
+            ));
+        }
+        if options.exclusive_period_evidence.is_some() && options.device.period_frames.is_some() {
+            return Err(unsupported(
+                "Exclusive minimum-period evidence cannot combine with an explicit period",
+            ));
+        }
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
             || !(MIN_SAMPLE_RATE_HZ..=MAX_SAMPLE_RATE_HZ).contains(&options.sample_rate)
-            || options
-                .device
-                .period_frames
-                .is_some_and(|f| !(64..=4096).contains(&f) || !f.is_power_of_two())
+            || !native_period_request_supported(options.device, options.input)
         {
             return Err(unsupported(
                 "invalid WASAPI endpoint, rate or buffer request",
@@ -375,6 +448,7 @@ impl WasapiStream {
         // by value; no reference to an unaligned native field escapes.
         let base = unsafe { memory.0.read_unaligned() };
         let mix = descriptor(memory.0)?;
+        let mix_info = shared_format_info(&mix);
         let mix_rate = base.nSamplesPerSec;
         let mix_channels = base.nChannels;
         let mix_container_bits = base.wBitsPerSample;
@@ -408,17 +482,71 @@ impl WasapiStream {
             shared_conversion: _,
         } = &selected;
         let rate = format.Format.nSamplesPerSec;
+        let mut period_report = (!exclusive).then(|| SharedPeriodReport {
+            mix_format: Some(mix_info),
+            client_format: Some(shared_format_info(format)),
+            windows_auto_conversion: selected.shared_conversion,
+            desired_period_ms: options
+                .device
+                .period_frames
+                .map(|frames| frames as f64 * 1000.0 / f64::from(rate)),
+            requested_period_frames: options.device.period_frames.map(|frames| frames as u32),
+            ..Default::default()
+        });
+        let exclusive_period_handle = options.exclusive_period_evidence.clone();
         let client = if exclusive {
-            negotiate_exclusive(&options, &device, client, &selected, &endpoint_name)?
+            negotiate_exclusive(
+                &options,
+                &device,
+                client,
+                &selected,
+                &endpoint_name,
+                exclusive_period_handle.as_ref(),
+            )?
         } else if let Some(period_frames) = options.device.period_frames {
-            negotiate_shared_exact(&options, &client, &selected, &endpoint_name, period_frames)?;
+            negotiate_shared_exact(
+                &options,
+                &client,
+                &selected,
+                &endpoint_name,
+                period_frames,
+                period_report.as_mut().expect("Shared period report"),
+            )?;
             client
         } else {
-            initialize_shared_legacy(&client, &format.Format, "Initialize(Shared)")?;
+            initialize_shared_legacy(
+                &client,
+                &format.Format,
+                "Initialize(Shared)",
+                period_report.as_mut().expect("Shared period report"),
+            )?;
+            period_report
+                .as_mut()
+                .expect("Shared period report")
+                .initialization_api = Some(SharedInitializationApi::LegacyClient);
             client
         };
+        if let Some(report) = period_report.as_mut() {
+            record_current_shared_period(&client, rate, report)?;
+        }
         api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
-        let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
+        let capacity_result = unsafe { client.GetBufferSize() };
+        if let Some(handle) = exclusive_period_handle.as_ref() {
+            let mut evidence = handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            evidence.record_actual_hresult(match &capacity_result {
+                Ok(_) => 0,
+                Err(error) => error.code().0,
+            });
+        }
+        let capacity = api("GetBufferSize", capacity_result)?;
+        if let Some(handle) = exclusive_period_handle.as_ref() {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record_actual(capacity);
+        }
         if capacity == 0 || capacity > MAX_BUFFER_FRAMES {
             return Err(unsupported(
                 "native WASAPI buffer exceeds the prepared frame limit",
@@ -458,9 +586,48 @@ impl WasapiStream {
         } else {
             Some(api("IAudioRenderClient", unsafe { client.GetService() })?)
         };
+        // Diagnostic service discovery and frequency query stay in preparation.
+        // Neither a missing service nor a bad clock disables native audio.
+        let device_clock = if options.input {
+            None
+        } else {
+            // Clock tracing applies to render timelines; capture timestamps
+            // come from GetBuffer and remain a separate raw evidence source.
+            unsafe { client.GetService::<IAudioClock>() }
+                .ok()
+                .map(PreparedDeviceClock::new)
+        };
+        let timing = NativeStreamTiming {
+            sample_rate: rate,
+            // Exclusive event callbacks consume exactly the negotiated packet.
+            // Shared capacity and the requested period are not observations.
+            period_frames: if exclusive {
+                Some(capacity)
+            } else {
+                period_report
+                    .as_ref()
+                    .and_then(|report| report.actual_period_frames)
+            },
+            capacity_frames: capacity,
+        };
+        let render_queue = prepare_wasapi_render_queue(
+            timing,
+            options.input,
+            options.device.mode,
+            RenderQueuePolicy::FullCapacity,
+        )?;
+        let padding_observer = (!options.input && !exclusive).then(RenderPaddingObserver::new);
+        let padding_owner = padding_observer
+            .as_ref()
+            .map(RenderPaddingObserver::new_owner);
         Ok(Self {
             capture,
             render,
+            device_clock,
+            capture_evidence: None,
+            render_evidence: None,
+            render_evidence_clock: None,
+            last_render_padding: None,
             client,
             event,
             info: NativeStreamInfo {
@@ -469,6 +636,17 @@ impl WasapiStream {
                 buffer_frames: capacity,
                 channels: usize::from(format.Format.nChannels),
             },
+            timing,
+            shared_period: period_report,
+            exclusive_period: exclusive_period_handle.map(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .to_owned()
+            }),
+            render_queue,
+            padding_observer,
+            padding_owner,
             codec: *codec,
             mode: options.device.mode,
             started: false,
@@ -481,6 +659,187 @@ impl WasapiStream {
             _apartment: apartment,
         })
     }
+}
+
+struct PreparedDeviceClock {
+    clock: IAudioClock,
+    frequency_hz: Option<u64>,
+    frequency_hresult: Option<i32>,
+}
+
+impl PreparedDeviceClock {
+    fn new(clock: IAudioClock) -> Self {
+        let (frequency_hz, frequency_hresult) = match unsafe { clock.GetFrequency() } {
+            // A successful zero result cannot normalize position. Preserve
+            // unknown units without fabricating an API failure or sample rate.
+            Ok(frequency) => ((frequency != 0).then_some(frequency), None),
+            Err(error) => (None, Some(error.code().0)),
+        };
+        Self {
+            clock,
+            frequency_hz,
+            frequency_hresult,
+        }
+    }
+
+    fn sample(&self) -> NativeDeviceClockObservation {
+        let mut sample = crate::latency::DeviceClockObservation::default();
+        // The Result-returning wrapper erases S_FALSE. Calling the same COM
+        // method through its vtable preserves the native accuracy/error code.
+        // SAFETY: this owner retains the service and supplies live scalars.
+        sample.hresult = unsafe {
+            (Interface::vtable(&self.clock).GetPosition)(
+                Interface::as_raw(&self.clock),
+                &mut sample.position_units,
+                &mut sample.qpc_100ns,
+            )
+        }
+        .0;
+        NativeDeviceClockObservation {
+            frequency_hz: self.frequency_hz,
+            frequency_hresult: self.frequency_hresult,
+            sample,
+        }
+    }
+}
+
+fn shared_format_info(format: &WAVEFORMATEXTENSIBLE) -> SharedFormatInfo {
+    let extended = format.Format.wFormatTag == crate::negotiation::EXTENSIBLE_TAG;
+    // GUID comparison borrows both operands; copy the packed field first.
+    let sub_format = format.SubFormat;
+    SharedFormatInfo {
+        sample_rate: format.Format.nSamplesPerSec,
+        channels: format.Format.nChannels,
+        container_bits: format.Format.wBitsPerSample,
+        // SAFETY: parsed/synthesized descriptors initialize this union member.
+        valid_bits: if extended {
+            // SAFETY: the extensible tag guarantees this union member is valid.
+            Some(unsafe { format.Samples.wValidBitsPerSample })
+        } else {
+            None
+        },
+        channel_mask: extended.then_some(format.dwChannelMask),
+        floating_point: sub_format == SUBFORMAT_FLOAT,
+    }
+}
+
+fn record_shared_period(
+    frames: u32,
+    engine_rate: u32,
+    client_rate: u32,
+    report: &mut SharedPeriodReport,
+) -> windows::core::Result<()> {
+    use windows::Win32::Foundation::E_INVALIDARG;
+    if frames == 0 || engine_rate == 0 || client_rate == 0 {
+        return Err(E_INVALIDARG.into());
+    }
+    let normalized = (u64::from(frames) * u64::from(client_rate)).div_ceil(u64::from(engine_rate));
+    let normalized =
+        u32::try_from(normalized).map_err(|_| windows::core::Error::from_hresult(E_INVALIDARG))?;
+    report.engine_period_frames = Some(frames);
+    report.engine_sample_rate = Some(engine_rate);
+    report.actual_period_frames = Some(normalized);
+    if report
+        .requested_period_frames
+        .is_some_and(|requested| requested != normalized)
+    {
+        return Err(windows::Win32::Media::Audio::AUDCLNT_E_INVALID_DEVICE_PERIOD.into());
+    }
+    Ok(())
+}
+
+fn record_current_shared_period(
+    client: &IAudioClient,
+    client_rate: u32,
+    report: &mut SharedPeriodReport,
+) -> Result<(), BackendError> {
+    let result = client.cast::<IAudioClient3>().and_then(|client3| {
+        let mut pointer = ptr::null_mut();
+        let mut period = 0;
+        let result = unsafe { client3.GetCurrentSharedModeEnginePeriod(&mut pointer, &mut period) };
+        // Retain the COM allocation until after the descriptor read, including
+        // failure cleanup. A copied pointer does not retain TaskMemory's owner.
+        let memory = TaskMemory(pointer);
+        result?;
+        if memory.0.is_null() {
+            return Err(windows::Win32::Foundation::E_POINTER.into());
+        }
+        // SAFETY: this call returned a complete owned WAVEFORMATEX descriptor.
+        let format = unsafe { memory.0.read_unaligned() };
+        record_shared_period(period, format.nSamplesPerSec, client_rate, report)
+    });
+    if let Err(error) = result {
+        report.actual_period_hresult = Some(error.code().0);
+        if report.requested_period_frames.is_some() {
+            return api("GetCurrentSharedModeEnginePeriod(exact period)", Err(error));
+        }
+    }
+    Ok(())
+}
+
+fn shared_render_demand(
+    timing: NativeStreamTiming,
+    queue: PreparedRenderQueue,
+    owner: Option<&mut RenderPaddingOwner>,
+    padding: u32,
+) -> Result<usize, BackendError> {
+    let demand = queue.demand(padding).map_err(unsupported)?;
+    if let Some(owner) = owner {
+        // Publish valid observations even when the target is already full.
+        // The control reader never sees capacity presented as a period.
+        owner.publish(RenderPaddingSample {
+            padding_frames: padding,
+            capacity_frames: timing.capacity_frames,
+            sample_rate: Some(timing.sample_rate),
+            period_frames: timing.period_frames,
+        });
+    }
+    Ok(demand as usize)
+}
+
+fn record_capture_evidence(
+    writer: Option<&mut crate::capture::PcmEvidenceWriter>,
+    bytes: &[u8],
+    frames: u32,
+    flags: u32,
+    device_position_frames: u64,
+    qpc_100ns: u64,
+) {
+    if let Some(writer) = writer {
+        let _ = writer.record_packet(
+            bytes,
+            crate::capture::PcmEvidencePacket {
+                frames,
+                flags,
+                device_position_frames,
+                qpc_100ns,
+            },
+        );
+    }
+}
+
+fn prepare_wasapi_render_queue(
+    timing: NativeStreamTiming,
+    input: bool,
+    mode: DeviceMode,
+    policy: RenderQueuePolicy,
+) -> Result<Option<PreparedRenderQueue>, BackendError> {
+    if input {
+        return match policy {
+            RenderQueuePolicy::FullCapacity => Ok(None),
+            RenderQueuePolicy::Target { .. } => {
+                Err(unsupported("capture streams do not have a render queue"))
+            }
+        };
+    }
+    if mode == DeviceMode::Exclusive && policy != RenderQueuePolicy::FullCapacity {
+        return Err(unsupported(
+            "Exclusive render requires complete native packets",
+        ));
+    }
+    prepare_render_queue(timing, policy)
+        .map(Some)
+        .map_err(unsupported)
 }
 
 struct SelectedFormat {
@@ -574,20 +933,28 @@ fn negotiate_exclusive(
     mut client: IAudioClient,
     selected: &SelectedFormat,
     endpoint_name: &str,
+    evidence_handle: Option<&ExclusivePeriodEvidenceHandle>,
 ) -> Result<IAudioClient, BackendError> {
     let format = &selected.format;
     let sample_format = selected.sample_format;
     let rate = format.Format.nSamplesPerSec;
     let (mut default_period, mut minimum_period) = (0, 0);
-    api("GetDevicePeriod", unsafe {
-        client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
-    })?;
-    let duration = options
-        .device
-        .period_frames
-        .map_or(default_period, |frames| {
-            exclusive_frames_duration(frames as u32, rate)
+    let period_result =
+        unsafe { client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period)) };
+    if let Some(handle) = evidence_handle {
+        let mut evidence = handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        evidence.record_query_hresult(match &period_result {
+            Ok(()) => 0,
+            Err(error) => error.code().0,
         });
+        if period_result.is_ok() {
+            evidence.record_query(default_period, minimum_period);
+        }
+    }
+    api("GetDevicePeriod", period_result)?;
+    let duration = exclusive_request_duration(options, default_period, minimum_period, rate)?;
     if let Some(requested_frames) = options.device.period_frames
         && let Some(minimum_frames) = minimum_exclusive_frames(minimum_period, rate)
         && u64::try_from(requested_frames)
@@ -631,15 +998,46 @@ fn negotiate_exclusive(
         default_period,
         minimum_period,
     );
-    // SAFETY: `format.Format` remains part of `selected` for this call.
-    let initialized = unsafe { initialize_exclusive(&client, &format.Format, duration) };
+    let initialized = observe_exclusive_initialize(
+        evidence_handle,
+        duration,
+        false,
+        // SAFETY: `format.Format` remains part of `selected` for this call.
+        |actual| unsafe { initialize_exclusive(&client, &format.Format, actual) },
+        |error| error.code().0,
+    );
     if initialized
         .as_ref()
         .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
     {
-        let aligned = api("GetBufferSize(alignment)", unsafe {
-            client.GetBufferSize()
-        })?;
+        if let Some(handle) = evidence_handle {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .begin_alignment();
+        }
+        let aligned_result = unsafe { client.GetBufferSize() };
+        if let Some(handle) = evidence_handle {
+            let mut evidence = handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            evidence.record_alignment_hresult(match &aligned_result {
+                Ok(_) => 0,
+                Err(error) => error.code().0,
+            });
+        }
+        let aligned = api("GetBufferSize(alignment)", aligned_result)?;
+        if let Some(handle) = evidence_handle {
+            handle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .record_alignment(aligned);
+        }
+        if evidence_handle.is_some() && !(1..=65536).contains(&aligned) {
+            return Err(unsupported(
+                "exclusive alignment query exceeds the prepared frame limit",
+            ));
+        }
         if options
             .device
             .period_frames
@@ -654,17 +1052,19 @@ fn negotiate_exclusive(
         client = api("Activate(aligned client)", unsafe {
             device.Activate(CLSCTX_ALL, None)
         })?;
+        let retry = observe_exclusive_initialize(
+            evidence_handle,
+            exclusive_frames_duration(aligned, rate),
+            true,
+            // SAFETY: the same selected format outlives this fresh-client call.
+            |actual| unsafe { initialize_exclusive(&client, &format.Format, actual) },
+            |error| error.code().0,
+        );
         api(
             "Initialize(Exclusive aligned)",
             // The shared negotiation helper owns the raw COM call; this map
             // keeps the professional BackendError stage and policy.
-            unsafe {
-                initialize_exclusive(
-                    &client,
-                    &format.Format,
-                    exclusive_frames_duration(aligned, rate),
-                )
-            },
+            retry,
         )?;
     } else {
         api("Initialize(Exclusive)", initialized)?;
@@ -672,120 +1072,90 @@ fn negotiate_exclusive(
     Ok(client)
 }
 
-/// Phase 2 (Shared, explicit period): exact period negotiation through
-/// IAudioClient3's engine periods, falling back to compatibility
-/// initialization on the kernel rejection matrix (D4 policy).
+fn exclusive_request_duration(
+    options: &WasapiOptions,
+    default_hns: i64,
+    minimum_hns: i64,
+    rate: u32,
+) -> Result<i64, BackendError> {
+    if options.exclusive_period_evidence.is_some() {
+        if !(1_000..=1_000_000).contains(&minimum_hns) {
+            return Err(unsupported(
+                "exclusive minimum period query returned an invalid period",
+            ));
+        }
+        Ok(minimum_hns)
+    } else {
+        Ok(options.device.period_frames.map_or(default_hns, |frames| {
+            exclusive_frames_duration(frames as u32, rate)
+        }))
+    }
+}
+
+/// Explicit Shared requests require exact Client3 negotiation and readback.
+/// Compatibility initialization remains available only when no period is requested.
 fn negotiate_shared_exact(
     options: &WasapiOptions,
     client: &IAudioClient,
     selected: &SelectedFormat,
     endpoint_name: &str,
     period_frames: usize,
+    report: &mut SharedPeriodReport,
 ) -> Result<(), BackendError> {
     let format = &selected.format;
-    let sample_format = selected.sample_format;
     let rate = format.Format.nSamplesPerSec;
-    // Explicit requests are exact, not rounded to a convenient driver
-    // period. The compatibility initialization cannot promise an exact
-    // event period.
-    let period = period_frames as u32;
+    let period = u32::try_from(period_frames)
+        .map_err(|_| unsupported("explicit Shared period overflows native frames"))?;
     if selected.shared_conversion {
-        log::warn!(
-            target: "moiren::audio::wasapi",
-            "WASAPI Shared explicit period uses compatibility initialization because the requested client format differs from the endpoint mix: endpoint={:?} requested_rate={} requested_format={:?} requested_frames={}",
-            options.endpoint_id,
-            rate,
-            sample_format,
+        return Err(unsupported(format!(
+            "exact Shared period {period} requires the endpoint mix format; select Device native or the matching rate and encoding"
+        )));
+    }
+    let client3: IAudioClient3 = api("IAudioClient3(exact period)", client.cast())?;
+    // SAFETY: the selected descriptor remains owned through initialization.
+    let periods = api("GetSharedModeEnginePeriod(exact period)", unsafe {
+        shared_engine_periods(&client3, std::ptr::from_ref(&format.Format))
+    })?;
+    report.caps = Some(SharedPeriodCaps {
+        default_frames: periods.default_frames,
+        fundamental_frames: periods.fundamental_frames,
+        min_frames: periods.min_frames,
+        max_frames: periods.max_frames,
+    });
+    let EnginePeriods {
+        default_frames: default,
+        fundamental_frames: fundamental,
+        min_frames: minimum,
+        max_frames: maximum,
+    } = periods;
+    log::info!(
+        target: "moiren::audio::wasapi",
+        "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
+        options.endpoint_id, endpoint_name,
+        if options.input { "input" } else { "output" },
+        rate, default, fundamental, minimum, maximum, period,
+    );
+    if fundamental == 0
+        || minimum == 0
+        || minimum > maximum
+        || period < minimum
+        || period > maximum
+        || !period.is_multiple_of(fundamental)
+    {
+        return Err(unsupported(format!(
+            "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
+        )));
+    }
+    // Never round or retry a locked engine at a different period.
+    api("InitializeSharedAudioStream", unsafe {
+        client3.InitializeSharedAudioStream(
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             period,
-        );
-        initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
-        return Ok(());
-    }
-    let client3: Option<IAudioClient3> = match client.cast() {
-        Ok(client3) => Some(client3),
-        // The kernel rejection matrix applies to this interface query as
-        // well: an endpoint without Client3 falls back to compatibility
-        // initialization instead of failing the exact-period request.
-        Err(error) if client3_rejects_format(error.code()) => {
-            log::warn!(
-                target: "moiren::audio::wasapi",
-                "WASAPI Client3 unavailable for exact Shared period; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                options.endpoint_id,
-                error.code().0 as u32,
-                period,
-            );
-            initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
-            None
-        }
-        Err(error) => return api("IAudioClient3(exact period)", Err(error)),
-    };
-    if let Some(client3) = client3 {
-        // SAFETY: format is the locally owned selected descriptor,
-        // valid for this query.
-        let capabilities =
-            unsafe { shared_engine_periods(&client3, std::ptr::from_ref(&format.Format)) };
-        match capabilities {
-            Ok(periods) => {
-                let EnginePeriods {
-                    default_frames: default,
-                    fundamental_frames: fundamental,
-                    min_frames: minimum,
-                    max_frames: maximum,
-                } = periods;
-                log::info!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
-                    options.endpoint_id,
-                    endpoint_name,
-                    if options.input { "input" } else { "output" },
-                    rate,
-                    default,
-                    fundamental,
-                    minimum,
-                    maximum,
-                    period,
-                );
-                if fundamental == 0
-                    || period < minimum
-                    || period > maximum
-                    || !period.is_multiple_of(fundamental)
-                {
-                    return Err(unsupported(format!(
-                        "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
-                    )));
-                }
-                // An explicit Shared period is a hard contract: out-of-range
-                // periods were rejected above (never rounded), so
-                // PERIODICITY_LOCKED surfaces instead of retrying with the
-                // engine's current period.
-                api("InitializeSharedAudioStream", unsafe {
-                    client3.InitializeSharedAudioStream(
-                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                        period,
-                        &format.Format,
-                        None,
-                    )
-                })?;
-            }
-            Err(error) if client3_rejects_format(error.code()) => {
-                log::warn!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI Client3 rejected the Shared format; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                    options.endpoint_id,
-                    error.code().0 as u32,
-                    period,
-                );
-                initialize_shared_legacy(
-                    client,
-                    &format.Format,
-                    "Initialize(Shared compatibility)",
-                )?;
-            }
-            Err(error) => {
-                return api("GetSharedModeEnginePeriod", Err(error));
-            }
-        }
-    }
+            &format.Format,
+            None,
+        )
+    })?;
+    report.initialization_api = Some(SharedInitializationApi::Client3);
     Ok(())
 }
 
@@ -793,47 +1163,206 @@ impl NativeStream for WasapiStream {
     fn info(&self) -> NativeStreamInfo {
         self.info
     }
-    fn start(&mut self) -> Result<(), BackendError> {
-        self.notifications.check()?;
-        if !self.started {
-            api("Start", unsafe { self.client.Start() })?;
-            self.started = true;
+    fn prepared_timing(&self) -> NativeStreamTiming {
+        self.timing
+    }
+    fn shared_period(&self) -> Option<SharedPeriodReport> {
+        self.shared_period
+    }
+    fn render_queue(&self) -> Option<PreparedRenderQueue> {
+        self.render_queue
+    }
+    fn render_padding_observer(&self) -> Option<RenderPaddingObserver> {
+        self.padding_observer.clone()
+    }
+    fn device_clock_observation(&self) -> Option<NativeDeviceClockObservation> {
+        self.device_clock.as_ref().map(PreparedDeviceClock::sample)
+    }
+    fn attach_capture_evidence(
+        &mut self,
+        writer: crate::capture::PcmEvidenceWriter,
+    ) -> Result<(), Box<(BackendError, crate::capture::PcmEvidenceWriter)>> {
+        if self.started || self.capture.is_none() {
+            return Err(Box::new((
+                unsupported("capture evidence must be attached before Start to a capture stream"),
+                writer,
+            )));
         }
+        if self.info.format != SampleFormat::Float32 || !(1..=2).contains(&self.info.channels) {
+            return Err(Box::new((
+                unsupported("raw capture evidence requires negotiated Float32 mono/stereo"),
+                writer,
+            )));
+        }
+        let summary = writer.snapshot();
+        if summary.sample_rate != self.info.sample_rate || summary.channels != self.info.channels {
+            return Err(Box::new((
+                unsupported("capture evidence format does not match the native client"),
+                writer,
+            )));
+        }
+        if self.capture_evidence.is_some() {
+            return Err(Box::new((
+                unsupported("capture evidence is already attached"),
+                writer,
+            )));
+        }
+        self.capture_evidence = Some(writer);
         Ok(())
+    }
+    fn take_capture_evidence(&mut self) -> Option<crate::capture::PcmEvidenceWriter> {
+        self.capture_evidence.take().map(|mut writer| {
+            writer.close();
+            writer
+        })
+    }
+    fn render_evidence_format(&self) -> Option<crate::render_evidence::RenderEvidenceFormat> {
+        self.render
+            .as_ref()
+            .map(|_| render_evidence::negotiated_format(self.codec, self.info.sample_rate))
+    }
+    fn attach_render_evidence(
+        &mut self,
+        writer: crate::render_evidence::RenderEvidenceWriter,
+    ) -> Result<(), Box<(BackendError, crate::render_evidence::RenderEvidenceWriter)>> {
+        if let Err(error) = validate_render_evidence_attachment(
+            &writer,
+            self.codec,
+            self.info.sample_rate,
+            self.info.buffer_frames as usize,
+            self.started,
+            self.render.is_some(),
+            self.render_evidence.is_some(),
+        ) {
+            return Err(Box::new((error, writer)));
+        }
+        self.render_evidence_clock = crate::latency::QpcClock::new();
+        self.render_evidence = Some(writer);
+        Ok(())
+    }
+    fn take_render_evidence(&mut self) -> Option<crate::render_evidence::RenderEvidenceWriter> {
+        self.render_evidence_clock = None;
+        self.render_evidence.take().map(|mut writer| {
+            writer.close();
+            writer
+        })
+    }
+    fn configure_render_queue(&mut self, policy: RenderQueuePolicy) -> Result<(), BackendError> {
+        if self.started {
+            return Err(unsupported(
+                "render queue must be configured before native Start",
+            ));
+        }
+        self.render_queue =
+            prepare_wasapi_render_queue(self.timing, self.capture.is_some(), self.mode, policy)?;
+        Ok(())
+    }
+    fn render_demand(&mut self) -> Result<usize, BackendError> {
+        self.last_render_padding = None;
+        self.notifications.check()?;
+        if self.render.is_none() {
+            return Ok(0);
+        }
+        if self.mode == DeviceMode::Exclusive {
+            return Ok(if self.render_ready {
+                self.info.buffer_frames as usize
+            } else {
+                0
+            });
+        }
+        let padding = api("GetCurrentPadding", unsafe {
+            self.client.GetCurrentPadding()
+        })?;
+        self.last_render_padding = Some(padding);
+        let queue = self.render_queue.expect("prepared render queue");
+        shared_render_demand(self.timing, queue, self.padding_owner.as_mut(), padding)
+    }
+    fn start(&mut self) -> Result<(), BackendError> {
+        let clock = self.render_evidence_clock;
+        let event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Start,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            self.notifications.check()?;
+            if !self.started {
+                // Stop invalidates the old generation. Restart is preparation,
+                // before the native client can issue another audio callback.
+                if let Some(observer) = &self.padding_observer {
+                    self.padding_owner = Some(observer.new_owner());
+                }
+                api("Start", unsafe { self.client.Start() })?;
+                self.started = true;
+            }
+            Ok(())
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn stop(&mut self) -> Result<(), BackendError> {
-        if self.started {
-            api("Stop", unsafe { self.client.Stop() })?;
-            self.started = false;
-        }
-        Ok(())
+        let clock = self.render_evidence_clock;
+        let event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Stop,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            if let Some(owner) = self.padding_owner.as_mut() {
+                owner.invalidate();
+            }
+            if self.started {
+                api("Stop", unsafe { self.client.Stop() })?;
+                self.started = false;
+            }
+            Ok(())
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn wait(&mut self, timeout: Duration) -> Result<bool, BackendError> {
-        self.notifications.check()?;
-        let ready = match unsafe {
-            WaitForSingleObject(
-                self.event.0,
-                timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32,
-            )
-        } {
-            WAIT_OBJECT_0 => {
-                self.render_ready = true;
-                self.stats.wait_wakes += 1;
-                true
-            }
-            WAIT_TIMEOUT => {
-                self.stats.wait_timeouts += 1;
-                false
-            }
-            _ => {
-                return api(
-                    "WaitForSingleObject",
-                    Err(windows::core::Error::from_thread()),
-                );
-            }
-        };
-        self.notifications.check()?;
-        Ok(ready)
+        let clock = self.render_evidence_clock;
+        let mut event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Wait,
+            || clock.and_then(|c| c.now()),
+        );
+        let result = (|| {
+            self.notifications.check()?;
+            let ready = match unsafe {
+                WaitForSingleObject(
+                    self.event.0,
+                    timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32,
+                )
+            } {
+                WAIT_OBJECT_0 => {
+                    self.render_ready = true;
+                    self.stats.wait_wakes += 1;
+                    true
+                }
+                WAIT_TIMEOUT => {
+                    self.stats.wait_timeouts += 1;
+                    false
+                }
+                _ => {
+                    return api(
+                        "WaitForSingleObject",
+                        Err(windows::core::Error::from_thread()),
+                    );
+                }
+            };
+            event.sample.ready = Some(ready);
+            self.notifications.check()?;
+            Ok(ready)
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn read(&mut self, output: &mut [StereoFrame]) -> Result<usize, BackendError> {
         self.notifications.check()?;
@@ -844,12 +1373,19 @@ impl NativeStream for WasapiStream {
             return Ok(0);
         }
         if self.captured_frames == self.captured_offset {
-            let (mut data, mut frames, mut flags) = (ptr::null_mut(), 0, 0);
+            let (mut data, mut frames, mut flags, mut position, mut qpc) =
+                (ptr::null_mut(), 0, 0, 0, 0);
             let available = capture_packet_frames(
                 self.mode,
                 || unsafe { capture.GetNextPacketSize() },
                 || unsafe {
-                    capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
+                    capture.GetBuffer(
+                        &mut data,
+                        &mut frames,
+                        &mut flags,
+                        Some(&mut position),
+                        Some(&mut qpc),
+                    )?;
                     Ok(frames)
                 },
             )?;
@@ -860,6 +1396,13 @@ impl NativeStream for WasapiStream {
             }
             let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            self.stats.capture_discontinuities +=
+                u64::from(flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0);
+            self.stats.capture_timestamp_errors +=
+                u64::from(flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0);
+            if silent {
+                self.stats.capture_silent_frames += u64::from(frames);
+            }
             // SAFETY: data is borrowed from the live GetBuffer lease until
             // the ReleaseBuffer call below.
             let bytes = unsafe {
@@ -872,6 +1415,16 @@ impl NativeStream for WasapiStream {
                 )
             }
             .map_err(|error| unsupported(format!("invalid capture packet: {error:?}")))?;
+            // Evidence saturation is reported by the bounded writer but never
+            // stalls or aborts native capture. Copy while the lease is valid.
+            record_capture_evidence(
+                self.capture_evidence.as_mut(),
+                bytes,
+                frames,
+                flags,
+                position,
+                qpc,
+            );
             if silent {
                 self.captured[..frames as usize].fill([0.0; 2]);
             } else {
@@ -892,53 +1445,86 @@ impl NativeStream for WasapiStream {
         Ok(count)
     }
     fn write(&mut self, input: &[StereoFrame]) -> Result<usize, BackendError> {
-        self.notifications.check()?;
-        let Some(render) = &self.render else {
-            return Ok(0);
-        };
-        let count = if self.mode == DeviceMode::Exclusive {
-            if !self.render_ready || input.len() < self.info.buffer_frames as usize {
+        let clock = self.render_evidence_clock;
+        let mut event = RenderOperationEvidence::begin(
+            self.render_evidence.is_some(),
+            RenderEventKind::Write,
+            || clock.and_then(|c| c.now()),
+        );
+        event.sample.requested_frames = input.len() as u64;
+        let result = (|| {
+            // Re-query after graph processing so a split Pump submission never
+            // exceeds the target even if native consumption changes the padding.
+            let demand = self.render_demand();
+            event.sample.padding_frames = self.last_render_padding;
+            let demand = demand?;
+            let Some(render) = &self.render else {
+                return Ok(0);
+            };
+            let count = if self.mode == DeviceMode::Exclusive {
+                if demand == 0 || input.len() < self.info.buffer_frames as usize {
+                    return Ok(0);
+                }
+                self.info.buffer_frames as usize
+            } else {
+                input.len().min(demand)
+            };
+            if count == 0 {
+                self.stats.zero_writes += 1;
                 return Ok(0);
             }
-            self.info.buffer_frames as usize
-        } else {
-            let padding = api("GetCurrentPadding", unsafe {
-                self.client.GetCurrentPadding()
+            let data = api("GetBuffer(render)", unsafe {
+                render.GetBuffer(count as u32)
             })?;
-            if padding > self.info.buffer_frames {
-                return Err(unsupported("render padding exceeds native capacity"));
+            let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
+            if data.is_null() {
+                if let Some(writer) = self.render_evidence.as_mut() {
+                    writer.record_unobserved(count);
+                }
+                return Err(unsupported("render packet has a null data pointer"));
             }
-            input
-                .len()
-                .min((self.info.buffer_frames - padding) as usize)
-        };
-        if count == 0 {
-            self.stats.zero_writes += 1;
-            return Ok(0);
-        }
-        let data = api("GetBuffer(render)", unsafe {
-            render.GetBuffer(count as u32)
-        })?;
-        let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
-        if data.is_null() {
-            return Err(unsupported("render packet has a null data pointer"));
-        }
-        // A successful GetBuffer reserves this complete writable frame region.
-        let bytes =
-            unsafe { std::slice::from_raw_parts_mut(data, count * self.codec.frame_bytes()) };
-        self.codec
-            .encode(&input[..count], bytes)
-            .map_err(unsupported)?;
-        api("ReleaseBuffer(render)", lease.release())?;
-        self.render_ready = false;
-        self.stats.write_calls += 1;
-        self.stats.written_frames += count as u64;
-        Ok(count)
+            // A successful GetBuffer reserves this complete writable frame region.
+            let bytes =
+                unsafe { std::slice::from_raw_parts_mut(data, count * self.codec.frame_bytes()) };
+            if let Err(error) = self.codec.encode(&input[..count], bytes) {
+                if let Some(writer) = self.render_evidence.as_mut() {
+                    writer.record_unobserved(count);
+                }
+                return Err(unsupported(error));
+            }
+            let staged = stage_render_evidence(bytes, count, self.render_evidence.as_mut());
+            let (hr, packet_sequence) =
+                release_render_evidence(lease, staged, self.render_evidence.as_mut());
+            event.packet_sequence = packet_sequence;
+            event.sample.submitted_frames = count as u32;
+            event.sample.release_hresult = Some(hr.0);
+            api("ReleaseBuffer(render)", hr.ok())?;
+            self.render_ready = false;
+            self.stats.write_calls += 1;
+            self.stats.written_frames += count as u64;
+            Ok(count)
+        })();
+        event.finish(self.render_evidence.as_mut(), result.is_err(), || {
+            clock.and_then(|c| c.now())
+        });
+        result
     }
     fn stats(&self) -> NativeStreamStats {
-        self.stats
+        NativeStreamStats {
+            capture_quality_available: self.capture.is_some(),
+            ..self.stats
+        }
     }
     fn release(&mut self) -> Result<(), BackendError> {
+        if let Some(owner) = self.padding_owner.as_mut() {
+            owner.invalidate();
+        }
+        if let Some(writer) = self.capture_evidence.as_mut() {
+            writer.close();
+        }
+        if let Some(writer) = self.render_evidence.as_mut() {
+            writer.close();
+        }
         self.notifications.unregister()
     }
 }
@@ -971,13 +1557,61 @@ fn initialize_shared_legacy(
     client: &IAudioClient,
     format: &WAVEFORMATEX,
     stage: &'static str,
+    report: &mut SharedPeriodReport,
 ) -> Result<(), BackendError> {
-    // Keeps Windows' default persisted-session behavior (no NOPERSIST) and
-    // always converts between the fixed client format and the endpoint mix.
-    // SAFETY: format is the caller's live descriptor for this call.
-    api(stage, unsafe {
-        initialize_legacy_shared(client, std::ptr::from_ref(format), None)
-    })
+    // Keep the professional stack's default persisted-session behavior and
+    // conversion between its fixed client format and the endpoint mix.
+    // SAFETY: format is the caller's live descriptor for both calls.
+    let init_default =
+        || unsafe { initialize_legacy_shared(client, std::ptr::from_ref(format), None) };
+    let init_with_duration = |duration: i64| unsafe {
+        initialize_legacy_shared_with_duration(client, std::ptr::from_ref(format), None, duration)
+    };
+    let initial = match init_default() {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    if !shared_initialize_retryable(initial.code()) {
+        return api(stage, Err(initial));
+    }
+    // The engine can reject the 0/0 default durations on the AUTOCONVERTPCM
+    // path (observed as raw 0x8889000A). Retry exactly once with an explicit
+    // buffer duration of two engine periods; a failed shared Initialize left
+    // this client un-initialized, so it stays reusable (unlike the exclusive
+    // alignment flow, which must activate a fresh client).
+    let (mut default_period, mut minimum_period) = (0, 0);
+    let aligned = match unsafe {
+        client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
+    } {
+        Ok(()) => aligned_shared_buffer_duration(default_period)
+            .or_else(|| aligned_shared_buffer_duration(minimum_period)),
+        Err(error) => {
+            log::warn!(
+                target: "moiren::audio::wasapi",
+                "WASAPI Shared aligned-duration retry skipped; GetDevicePeriod failed: hresult=0x{:08X} initial_hresult=0x{:08X}",
+                error.code().0 as u32,
+                initial.code().0 as u32,
+            );
+            None
+        }
+    };
+    let Some(duration) = aligned else {
+        return api(stage, Err(initial));
+    };
+    log::warn!(
+        target: "moiren::audio::wasapi",
+        "WASAPI Shared compatibility initialization returned hresult=0x{:08X}; retrying once with an aligned buffer duration of {duration} 100ns units",
+        initial.code().0 as u32,
+    );
+    match init_with_duration(duration) {
+        Ok(()) => {
+            report.fallback_reason = Some(SharedFallbackReason::AlignedDurationRetry);
+            Ok(())
+        }
+        // Retain the original rejection as the surfaced diagnosis; the retry
+        // HRESULT stays in the log line above for evidence.
+        Err(_retry) => api(stage, Err(initial)),
+    }
 }
 
 fn same_format(left: &WAVEFORMATEXTENSIBLE, right: &WAVEFORMATEXTENSIBLE) -> bool {
@@ -1110,22 +1744,13 @@ fn codec_for(format: &WAVEFORMATEXTENSIBLE) -> Result<(SampleFormat, SampleCodec
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        DeviceMode, EndpointNotifications, api, capture_packet_frames, frames_milliseconds,
-        minimum_exclusive_frames, next_exclusive_preset,
-    };
-    use moiren_engine::host::BackendError;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-    use windows::Win32::Media::Audio::{
-        AUDCLNT_E_DEVICE_IN_USE, AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_SERVICE_NOT_RUNNING,
-        AUDCLNT_E_UNSUPPORTED_FORMAT,
-    };
-    use windows::core::PCWSTR;
+#[path = "wasapi/period_tests.rs"]
+mod period_tests;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use moiren_engine::host::BackendError;
     #[test]
     fn device_removal_hresults_classify_as_absence_not_unavailable() {
         // The runtime-unplug classification: an invalidated endpoint or a
@@ -1179,11 +1804,7 @@ mod tests {
             capture_packet_frames(
                 DeviceMode::Exclusive,
                 || Ok(480),
-                || {
-                    Err(windows::core::Error::from_hresult(
-                        windows::Win32::Media::Audio::AUDCLNT_E_BUFFER_ERROR,
-                    ))
-                },
+                || Err(windows::core::Error::from_hresult(AUDCLNT_E_BUFFER_ERROR)),
             )
             .unwrap(),
             0
@@ -1198,9 +1819,7 @@ mod tests {
 
     #[test]
     fn capture_packet_polling_preserves_shared_admission_and_real_errors() {
-        use windows::Win32::Media::Audio::{
-            AUDCLNT_E_BUFFER_ERROR, AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_OUT_OF_ORDER,
-        };
+        use windows::Win32::Media::Audio::AUDCLNT_E_OUT_OF_ORDER;
 
         assert_eq!(
             capture_packet_frames(DeviceMode::Shared, || Ok(0), || panic!("no packet lease"))
@@ -1236,6 +1855,233 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[implement(IAudioClock)]
+    struct DiagnosticClock {
+        frequency: Result<u64, i32>,
+        frequency_calls: std::rc::Rc<std::cell::Cell<usize>>,
+        hresult: i32,
+    }
+
+    impl IAudioClock_Impl for DiagnosticClock_Impl {
+        fn GetFrequency(&self) -> windows::core::Result<u64> {
+            self.frequency_calls.set(self.frequency_calls.get() + 1);
+            self.frequency
+                .map_err(|code| windows::core::Error::from_hresult(windows::core::HRESULT(code)))
+        }
+        fn GetPosition(&self, position: *mut u64, qpc: *mut u64) -> windows::core::Result<()> {
+            // SAFETY: PreparedDeviceClock::sample supplies live output scalars.
+            unsafe {
+                *position = 1234;
+                *qpc = 5678;
+            }
+            if self.hresult == 0 {
+                Ok(())
+            } else {
+                Err(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    self.hresult,
+                )))
+            }
+        }
+        fn GetCharacteristics(&self) -> windows::core::Result<u32> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn raw_device_clock_keeps_frequency_units_qpc_and_low_accuracy_or_failure_hresult() {
+        use windows::Win32::Foundation::E_FAIL;
+        for hresult in [0, 1, E_FAIL.0] {
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let clock: IAudioClock = DiagnosticClock {
+                frequency: Ok(384_000),
+                frequency_calls: calls.clone(),
+                hresult,
+            }
+            .into();
+            let clock = PreparedDeviceClock::new(clock);
+            assert_eq!(calls.get(), 1);
+            for _ in 0..3 {
+                let observation = clock.sample();
+                assert_eq!(observation.frequency_hz, Some(384_000));
+                assert_eq!(observation.frequency_hresult, None);
+                assert_eq!(observation.sample.position_units, 1234);
+                assert_eq!(observation.sample.qpc_100ns, 5678);
+                assert_eq!(observation.sample.hresult, hresult);
+            }
+            assert_eq!(calls.get(), 1, "position sampling must not query frequency");
+        }
+    }
+
+    #[test]
+    fn raw_device_clock_never_invents_frequency_when_query_fails_or_returns_zero() {
+        use windows::Win32::Foundation::E_FAIL;
+        for frequency in [Err(E_FAIL.0), Ok(0)] {
+            let clock: IAudioClock = DiagnosticClock {
+                frequency,
+                frequency_calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+                hresult: 1,
+            }
+            .into();
+            let observation = PreparedDeviceClock::new(clock).sample();
+            assert_eq!(observation.frequency_hz, None);
+            assert_eq!(observation.frequency_hresult, frequency.err());
+            assert_eq!(observation.sample.position_units, 1234);
+            assert_eq!(observation.sample.qpc_100ns, 5678);
+            assert_eq!(observation.sample.hresult, 1);
+        }
+    }
+
+    #[test]
+    fn actual_shared_period_is_normalized_instead_of_using_native_capacity() {
+        for (frames, engine_rate, expected) in [(960, 96_000, 480), (128, 44_100, 140)] {
+            let mut report = SharedPeriodReport::default();
+            record_shared_period(frames, engine_rate, 48_000, &mut report).unwrap();
+            assert_eq!(report.engine_period_frames, Some(frames));
+            assert_eq!(report.engine_sample_rate, Some(engine_rate));
+            assert_eq!(report.actual_period_frames, Some(expected));
+        }
+        for (frames, engine_rate, client_rate) in [
+            (0, 48_000, 48_000),
+            (480, 0, 48_000),
+            (480, 48_000, 0),
+            (u32::MAX, 1, u32::MAX),
+        ] {
+            let mut report = SharedPeriodReport::default();
+            assert!(record_shared_period(frames, engine_rate, client_rate, &mut report).is_err());
+            assert_eq!(report.actual_period_frames, None);
+            assert_eq!(report.engine_period_frames, None);
+        }
+    }
+
+    fn timing() -> NativeStreamTiming {
+        NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(240),
+            capacity_frames: 960,
+        }
+    }
+
+    fn target() -> RenderQueuePolicy {
+        RenderQueuePolicy::Target {
+            frames: 480,
+            wake_margin_frames: 120,
+            callback_budget_frames: 120,
+        }
+    }
+
+    #[test]
+    fn target_queue_requires_actual_shared_timing_and_rejects_capture_and_exclusive() {
+        let timing = timing();
+        let queue = prepare_wasapi_render_queue(timing, false, DeviceMode::Shared, target())
+            .unwrap()
+            .unwrap();
+        assert_eq!(queue.capacity_frames, 960);
+        assert_eq!(queue.target_frames, 480);
+        assert_eq!(queue.deadline_budget_frames, Some(480));
+        assert!(prepare_wasapi_render_queue(timing, true, DeviceMode::Shared, target()).is_err());
+        assert!(
+            prepare_wasapi_render_queue(timing, false, DeviceMode::Exclusive, target()).is_err()
+        );
+        let unknown = NativeStreamTiming {
+            period_frames: None,
+            ..timing
+        };
+        let full = prepare_wasapi_render_queue(
+            unknown,
+            false,
+            DeviceMode::Shared,
+            RenderQueuePolicy::FullCapacity,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(full.target_frames, 960);
+        assert_eq!(full.deadline_budget_frames, None);
+        assert!(prepare_wasapi_render_queue(unknown, false, DeviceMode::Shared, target()).is_err());
+        for frames in [479, 961] {
+            let policy = RenderQueuePolicy::Target {
+                frames,
+                wake_margin_frames: 120,
+                callback_budget_frames: 120,
+            };
+            assert!(
+                prepare_wasapi_render_queue(timing, false, DeviceMode::Shared, policy).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn live_padding_publishes_at_zero_demand_and_preserves_unknown_period() {
+        let observer = RenderPaddingObserver::new();
+        let mut owner = observer.new_owner();
+        let queue = prepare_render_queue(timing(), target()).unwrap();
+        for (padding, expected) in [(0, 480), (240, 240), (480, 0), (960, 0)] {
+            assert_eq!(
+                shared_render_demand(timing(), queue, Some(&mut owner), padding).unwrap(),
+                expected
+            );
+            let sample = observer.try_snapshot().unwrap();
+            assert_eq!(sample.padding_frames, padding);
+            assert_eq!(sample.capacity_frames, 960);
+            assert_eq!(sample.period_frames, Some(240));
+        }
+        assert!(shared_render_demand(timing(), queue, Some(&mut owner), 961).is_err());
+        let unknown = NativeStreamTiming {
+            period_frames: None,
+            ..timing()
+        };
+        let queue = prepare_render_queue(unknown, RenderQueuePolicy::FullCapacity).unwrap();
+        assert_eq!(
+            shared_render_demand(unknown, queue, Some(&mut owner), 0).unwrap(),
+            960
+        );
+        assert_eq!(observer.try_snapshot().unwrap().period_frames, None);
+    }
+
+    #[test]
+    fn raw_capture_evidence_preserves_pcm_bits_flags_and_native_timestamps() {
+        use crate::{
+            capture::{PcmEvidenceConfig, pcm_evidence_stream},
+            stats::TIMESTAMP_ERROR,
+        };
+        let (mut writer, mut reader) = pcm_evidence_stream(
+            PcmEvidenceConfig {
+                capacity_frames: 4,
+                detect_position_gaps: true,
+            },
+            48_000,
+            2,
+        )
+        .unwrap();
+        let pcm = [
+            f32::from_bits(0x3f80_0001),
+            f32::NEG_INFINITY,
+            f32::from_bits(0x7fc0_1234),
+            -0.0,
+        ];
+        let bytes: Vec<u8> = pcm.into_iter().flat_map(f32::to_le_bytes).collect();
+        record_capture_evidence(
+            Some(&mut writer),
+            &bytes,
+            2,
+            TIMESTAMP_ERROR,
+            0x1234_5678_9abc,
+            0x8765_4321,
+        );
+        for expected in pcm.as_chunks::<2>().0 {
+            let frame = reader.pop().unwrap();
+            assert_eq!(frame.samples[0].to_bits(), expected[0].to_bits());
+            assert_eq!(frame.samples[1].to_bits(), expected[1].to_bits());
+            assert_eq!(frame.packet_sequence, 1);
+            assert_eq!(frame.packet_frames, 2);
+            assert_eq!(frame.flags, TIMESTAMP_ERROR);
+            assert_eq!(frame.device_position_frames, 0x1234_5678_9abc);
+            assert_eq!(frame.qpc_100ns, 0x8765_4321);
+        }
+        let summary = writer.snapshot();
+        assert_eq!(summary.timestamp_error_packets, 1);
+        assert_eq!(summary.stored_frames, 2);
     }
 
     #[test]

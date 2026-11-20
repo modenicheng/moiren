@@ -23,10 +23,21 @@ mod tests;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
+    /// Actual executor identity after events at this segment's first frame.
+    /// Direct/manual boundary callers must use None, not preparation labels.
+    pub execution: Option<ExecutionStamp>,
     pub timeline_epoch: u64,
     pub timeline_start: u64,
     pub frames: usize,
     pub processing_sr: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct ExecutionStamp {
+    pub plan_revision: u64,
+    /// Engine-lifetime count of applied parameter events, not queued requests.
+    /// Survives plan swaps so inherited ramps cannot look like initial state.
+    pub control_generation: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessorError {

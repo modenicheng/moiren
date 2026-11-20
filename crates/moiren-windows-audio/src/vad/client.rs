@@ -112,6 +112,7 @@ fn created_reply(
 pub struct ControlClient {
     io: ControlHandle,
     capabilities: Capabilities,
+    identity_capabilities: Option<super::IdentityCapabilities>,
 }
 
 impl ControlClient {
@@ -125,6 +126,7 @@ impl ControlClient {
         Ok(Self {
             io,
             capabilities: Capabilities::decode(&bytes)?,
+            identity_capabilities: None,
         })
     }
     pub const fn capabilities(&self) -> Capabilities {
@@ -138,6 +140,7 @@ impl ControlClient {
         Self {
             io: self.io.duplicate(),
             capabilities: self.capabilities,
+            identity_capabilities: self.identity_capabilities,
         }
     }
 
@@ -160,6 +163,81 @@ impl ControlClient {
             deadline_after(REQUEST_TIMEOUT)?,
         )?;
         created_reply(&bytes, self.capabilities, id, intent, channels)
+    }
+
+    /// Establish the identity allocated by this control-side producer. Retain
+    /// `identity` across retries; an uncertain IO result never allocates a new ID.
+    pub fn establish(
+        &mut self,
+        identity: &super::NewEndpointIdentity,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.create_identity(
+            identity.stable_id(),
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::EstablishNew,
+        )
+    }
+
+    /// Project-loaded and renamed identities must reopen/adopt, never establish
+    /// from absent state. Unsupported capability is explicit, not v2 fallback.
+    pub fn reopen(
+        &mut self,
+        id: StableEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.create_identity(
+            id,
+            intent,
+            channels,
+            name,
+            allow_default,
+            super::PublicationMode::ReopenOrAdopt,
+        )
+    }
+
+    pub(super) fn create_identity(
+        &mut self,
+        id: StableEndpointId,
+        intent: Intent,
+        channels: Channels,
+        name: &str,
+        allow_default: bool,
+        mode: super::PublicationMode,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.capabilities.validate_create(intent, channels)?;
+        let request =
+            super::create_identity_request(id, intent, channels, name, allow_default, mode)?;
+        self.require_publication_identity()?;
+        let bytes = self.io.exchange::<SNAPSHOT_SIZE>(
+            super::IOCTL_CREATE_IDENTITY,
+            &request,
+            deadline_after(REQUEST_TIMEOUT)?,
+        )?;
+        created_reply(&bytes, self.capabilities, id, intent, channels)
+    }
+
+    pub(super) fn require_publication_identity(&mut self) -> Result<(), ClientError> {
+        if self.identity_capabilities.is_some() {
+            return Ok(());
+        }
+        self.capabilities.require_audio()?;
+        let bytes = self.io.exchange::<{ super::IDENTITY_CAPABILITIES_SIZE }>(
+            super::IOCTL_IDENTITY_CAPABILITIES,
+            &super::identity_capabilities_request(),
+            deadline_after(REQUEST_TIMEOUT)?,
+        )?;
+        self.identity_capabilities = Some(super::IdentityCapabilities::decode(&bytes)?);
+        Ok(())
     }
 
     /// Wait for asynchronous preparation with one deadline, including CREATE.
@@ -335,24 +413,41 @@ impl ControlClient {
         Ok(snapshot)
     }
 
+    /// Send REMOVE and confirm the same endpoint through QUERY within one deadline.
     pub fn remove_and_wait(
         &mut self,
         key: EndpointKey,
         timeout: Duration,
     ) -> Result<EndpointSnapshot, ClientError> {
         let deadline = deadline_after(timeout)?;
-        let mut previous = self.remove_at(key, deadline)?;
-        loop {
-            if previous.removal_complete_after(previous)? {
-                return Ok(previous);
-            }
-            poll_delay(deadline)?;
-            let current = self.query_at(key, deadline)?;
-            if current.removal_complete_after(previous)? {
-                return Ok(current);
-            }
-            previous = current;
-        }
+        let previous = self.remove_at(key, deadline)?;
+        self.confirm_removed_at(previous, deadline)
+    }
+
+    /// Confirm an already retiring endpoint through QUERY within the given timeout.
+    ///
+    /// Takes the latest snapshot of that retirement. Use this after releasing a
+    /// held native client when REMOVE was submitted while the client was active.
+    pub fn confirm_removed(
+        &mut self,
+        previous: EndpointSnapshot,
+        timeout: Duration,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        self.confirm_removed_at(previous, deadline_after(timeout)?)
+    }
+
+    fn confirm_removed_at(
+        &mut self,
+        previous: EndpointSnapshot,
+        deadline: Instant,
+    ) -> Result<EndpointSnapshot, ClientError> {
+        wait_removed(
+            previous,
+            deadline,
+            Instant::now,
+            |key| self.query_at(key, deadline),
+            std::thread::sleep,
+        )
     }
 
     /// Control/IO-owner side only: allocates four fixed slots and events.
@@ -434,7 +529,38 @@ fn finish_close(
     // Lifecycle and PCM workers share the file but can race to close the same
     // gate. Confirm only the same stream is now closed. Never retry SET_GATE
     // using a refreshed epoch: that could close a newly admitted stream/revision.
-    let current = query()?.require_progress_after(previous)?;
+    let current = match query() {
+        Ok(snapshot) => match snapshot.require_progress_after(previous) {
+            Ok(current) => current,
+            Err(progress_error) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=gate_close_confirmation decision=invalid_progress previous={previous:?} confirmation={snapshot:?} close_error={error:?} progress_error={progress_error:?}"
+                );
+                return Err(progress_error.into());
+            }
+        },
+        Err(query_error) => {
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=gate_close_confirmation decision=query_failed previous={previous:?} confirmation={query_error:?} close_error={error:?}"
+            );
+            return Err(query_error);
+        }
+    };
+    let decision = if current.stream_generation() != previous.stream_generation() {
+        "rejected_changed_stream"
+    } else if current.gate_open() {
+        "rejected_still_open"
+    } else if current.gate_epoch() <= previous.gate_epoch() {
+        "rejected_epoch_not_advanced"
+    } else {
+        "accepted_closed_same_stream"
+    };
+    log::debug!(
+        target: "moiren::audio::vad",
+        "event=gate_close_confirmation decision={decision} previous={previous:?} confirmation={current:?} close_error={error:?}"
+    );
     if !current.gate_open()
         && current.stream_generation() == previous.stream_generation()
         && current.gate_epoch() > previous.gate_epoch()
@@ -446,12 +572,40 @@ fn finish_close(
 }
 
 fn poll_delay(deadline: Instant) -> Result<(), ClientError> {
-    let remaining = deadline
-        .checked_duration_since(Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or(ClientError::DeadlineExceeded)?;
-    std::thread::sleep(remaining.min(POLL_INTERVAL));
+    std::thread::sleep(remaining_before(deadline, Instant::now())?.min(POLL_INTERVAL));
     Ok(())
+}
+
+fn remaining_before(deadline: Instant, now: Instant) -> Result<Duration, ClientError> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|duration| !duration.is_zero())
+        .ok_or(ClientError::DeadlineExceeded)
+}
+
+fn wait_removed(
+    mut previous: EndpointSnapshot,
+    deadline: Instant,
+    now: impl Fn() -> Instant,
+    mut query: impl FnMut(EndpointKey) -> Result<EndpointSnapshot, ClientError>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<EndpointSnapshot, ClientError> {
+    previous.removal_complete_after(previous)?;
+    loop {
+        let remaining = remaining_before(deadline, now())?;
+        // A terminal REMOVE reply still needs a QUERY. If retirement is
+        // pending, give PnP time to advance before polling.
+        if previous.state() != PdoState::Removed {
+            sleep(remaining.min(POLL_INTERVAL));
+            remaining_before(deadline, now())?;
+        }
+        let current = query(previous.key())?;
+        remaining_before(deadline, now())?;
+        if current.removal_complete_after(previous)? {
+            return Ok(current);
+        }
+        previous = current;
+    }
 }
 
 #[cfg(test)]
@@ -467,6 +621,17 @@ mod tests {
     }
 
     fn gate_snapshot_for(
+        session: u64,
+        token: u64,
+        stream: u64,
+        gate: u64,
+        open: bool,
+    ) -> EndpointSnapshot {
+        endpoint_snapshot(PdoState::Present, session, token, stream, gate, open)
+    }
+
+    fn endpoint_snapshot(
+        state: PdoState,
         session: u64,
         token: u64,
         stream: u64,
@@ -494,12 +659,12 @@ mod tests {
         for (offset, value) in [
             (0, 128_u32),
             (4, 2),
-            (16, PdoState::Present as u32),
+            (16, state as u32),
             (20, Intent::Microphone as u32),
             (24, 2),
             (28, u32::from(open)),
             (32, 1),
-            (36, 1),
+            (36, u32::from(state == PdoState::Present)),
             (88, 2),
             (92, 480),
             (100, 2),
@@ -516,6 +681,116 @@ mod tests {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         EndpointSnapshot::decode(&bytes, Capabilities::decode(&caps).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn removal_requires_a_direct_query_even_after_terminal_remove_reply() {
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let mut queries = 0;
+        let result = wait_removed(
+            removed,
+            start + Duration::from_secs(15),
+            || start,
+            |key| {
+                assert_eq!(key, removed.key());
+                queries += 1;
+                Ok(removed)
+            },
+            |_| panic!("terminal acknowledgement needs no polling delay"),
+        );
+        assert_eq!(result.unwrap(), removed);
+        assert_eq!(queries, 1);
+    }
+
+    #[test]
+    fn removal_confirmation_requires_a_prior_retiring_snapshot() {
+        let present = endpoint_snapshot(PdoState::Present, 7, 11, 3, 5, false);
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let mut queries = 0;
+        let result = wait_removed(
+            present,
+            start + Duration::from_secs(15),
+            || start,
+            |_| {
+                queries += 1;
+                Ok(removed)
+            },
+            |_| {},
+        );
+        assert!(matches!(result, Err(ClientError::Protocol(_))));
+        assert_eq!(queries, 0);
+    }
+
+    #[test]
+    fn removal_refuses_other_lifetimes_and_state_regressions() {
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(15);
+        for unrelated in [
+            endpoint_snapshot(PdoState::Removed, 8, 11, 3, 5, false),
+            endpoint_snapshot(PdoState::Removed, 7, 12, 3, 5, false),
+            endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false),
+        ] {
+            let result = wait_removed(
+                removed,
+                deadline,
+                || start,
+                |_| Ok(unrelated),
+                |_| panic!("terminal acknowledgement needs no polling delay"),
+            );
+            assert!(matches!(result, Err(ClientError::Protocol(_))));
+        }
+        assert!(matches!(
+            wait_removed(
+                removed,
+                deadline,
+                || deadline,
+                |_| panic!("no expired query"),
+                |_| panic!("no expired sleep")
+            ),
+            Err(ClientError::DeadlineExceeded)
+        ));
+    }
+
+    #[test]
+    fn removal_rejects_terminal_query_at_the_deadline() {
+        let removing = endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false);
+        let removed = endpoint_snapshot(PdoState::Removed, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(15);
+        let clock = std::cell::Cell::new(start);
+        let result = wait_removed(
+            removing,
+            deadline,
+            || clock.get(),
+            |_| {
+                clock.set(deadline);
+                Ok(removed)
+            },
+            |pause| clock.set(clock.get() + pause),
+        );
+        assert!(matches!(result, Err(ClientError::DeadlineExceeded)));
+    }
+
+    #[test]
+    fn removal_never_dispatches_a_query_after_the_final_sleep() {
+        let removing = endpoint_snapshot(PdoState::Removing, 7, 11, 3, 5, false);
+        let start = Instant::now();
+        let remaining = Duration::from_millis(8);
+        let clock = std::cell::Cell::new(start);
+        let result = wait_removed(
+            removing,
+            start + remaining,
+            || clock.get(),
+            |_| panic!("QUERY must not start at the expired deadline"),
+            |pause| {
+                assert_eq!(pause, remaining);
+                clock.set(start + pause);
+            },
+        );
+        assert!(matches!(result, Err(ClientError::DeadlineExceeded)));
     }
 
     fn revision_mismatch() -> ClientError {
@@ -604,6 +879,109 @@ mod tests {
             finish_close(previous, Ok(closed), || panic!("already complete")).unwrap(),
             closed
         );
+    }
+
+    #[test]
+    fn close_confirmation_log_child() {
+        let Ok(filter) = std::env::var("MOIREN_CLOSE_CONFIRMATION_LOG_CHILD") else {
+            return;
+        };
+        let _logger = if filter == "off" {
+            None
+        } else {
+            Some(
+                flexi_logger::Logger::try_with_str(filter)
+                    .unwrap()
+                    .log_to_stderr()
+                    .start()
+                    .unwrap(),
+            )
+        };
+        let previous = gate_snapshot(3, 5, true);
+        for (snapshot, accepted, protocol_error) in [
+            (gate_snapshot(3, 6, false), true, false),
+            (gate_snapshot(4, 6, false), false, false),
+            (gate_snapshot(3, 6, true), false, false),
+            (gate_snapshot(3, 5, false), false, false),
+            (gate_snapshot_for(8, 11, 3, 6, false), false, true),
+        ] {
+            let calls = std::cell::Cell::new(0);
+            let result = finish_close(previous, Err(revision_mismatch()), || {
+                calls.set(calls.get() + 1);
+                Ok(snapshot)
+            });
+            assert_eq!(calls.get(), 1);
+            assert_eq!(result.is_ok(), accepted);
+            if protocol_error {
+                assert!(matches!(result, Err(ClientError::Protocol(_))));
+            } else if !accepted {
+                assert!(matches!(result, Err(ClientError::Windows { .. })));
+            }
+        }
+        let calls = std::cell::Cell::new(0);
+        assert!(matches!(
+            finish_close(previous, Err(revision_mismatch()), || {
+                calls.set(calls.get() + 1);
+                Err(ClientError::DeadlineExceeded)
+            }),
+            Err(ClientError::DeadlineExceeded)
+        ));
+        assert_eq!(calls.get(), 1);
+        finish_close(previous, Ok(gate_snapshot(3, 6, false)), || {
+            panic!("successful close must not query")
+        })
+        .unwrap();
+        assert!(matches!(
+            finish_close(previous, Err(ClientError::Cancelled), || {
+                panic!("unrelated error must not query")
+            }),
+            Err(ClientError::Cancelled)
+        ));
+    }
+
+    fn close_confirmation_child(filter: &str) -> std::process::Output {
+        // Isolate the global logger from other library logger tests. No native
+        // handle or device is opened by the actual finish_close helper.
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "vad::client::tests::close_confirmation_log_child",
+                "--nocapture",
+            ])
+            .env("MOIREN_CLOSE_CONFIRMATION_LOG_CHILD", filter)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn close_confirmation_debug_records_single_query_and_unchanged_decisions() {
+        let output = close_confirmation_child("moiren::audio::vad=debug");
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("event=gate_close_confirmation ").count(), 6);
+        for decision in [
+            "accepted_closed_same_stream",
+            "rejected_changed_stream",
+            "rejected_still_open",
+            "rejected_epoch_not_advanced",
+            "invalid_progress",
+            "query_failed",
+        ] {
+            let line = stderr
+                .lines()
+                .find(|line| line.contains(&format!("decision={decision}")))
+                .unwrap_or_else(|| panic!("missing {decision}: {stderr}"));
+            assert!(line.contains("previous=EndpointSnapshot"), "{line}");
+            assert!(line.contains("confirmation="), "{line}");
+            assert!(line.contains("close_error="), "{line}");
+        }
+    }
+
+    #[test]
+    fn close_confirmation_logging_disabled_preserves_results_without_output() {
+        let output = close_confirmation_child("off");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
     }
 
     #[test]

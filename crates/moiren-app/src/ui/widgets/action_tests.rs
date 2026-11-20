@@ -13,6 +13,7 @@ struct Actions {
     activations: Rc<Cell<usize>>,
     request: Rc<Cell<Option<bool>>>,
     selected: bool,
+    disabled: bool,
 }
 
 impl Render for Actions {
@@ -21,6 +22,7 @@ impl Render for Actions {
         let icon_count = count.clone();
         let window_count = count.clone();
         let disabled_count = count.clone();
+        let disabled_icon_count = count.clone();
         let request = self.request.clone();
         let disabled_request = request.clone();
         div()
@@ -42,8 +44,15 @@ impl Render for Actions {
             )
             .child(
                 ActionButton::new("disabled", "Disabled")
-                    .disabled(true)
+                    .disabled(self.disabled)
                     .on_click(move |_, _, _| disabled_count.set(disabled_count.get() + 1)),
+            )
+            .child(
+                IconButton::new("disabled-icon", "Disabled settings", ActionIcon::Settings)
+                    .disabled(self.disabled)
+                    .on_click(move |_, _, _| {
+                        disabled_icon_count.set(disabled_icon_count.get() + 1)
+                    }),
             )
             .child(
                 ToggleIconButton::new("toggle", "Monitor", ActionIcon::Settings)
@@ -76,6 +85,7 @@ fn harness(cx: &mut gpui_kit::TestAppContext) -> Harness<'_> {
         activations: count.clone(),
         request: request.clone(),
         selected: false,
+        disabled: true,
     });
     cx.update(|window, cx| window.render_frame(cx));
     Harness {
@@ -99,8 +109,105 @@ fn action_family_uses_pointer_enter_and_space_once(cx: &mut gpui_kit::TestAppCon
         });
         assert_eq!(count.get(), before + 3, "{id} must activate once per input");
     }
-    cx.update(|window, cx| window.click("disabled", cx));
+    cx.update(|window, cx| {
+        window.click("disabled", cx);
+        window.click("disabled-icon", cx);
+    });
     assert_eq!(count.get(), 9);
+}
+
+#[gpui_kit::test]
+fn action_buttons_reenable_with_the_same_identity(cx: &mut gpui_kit::TestAppContext) {
+    let Harness {
+        view, cx, count, ..
+    } = harness(cx);
+    cx.update(|window, cx| {
+        let bounds = [
+            window.find("disabled").bounds(),
+            window.find("disabled-icon").bounds(),
+        ];
+        for disabled in [true, false, true, false] {
+            view.update(cx, |view, _| view.disabled = disabled);
+            window.render_frame(cx);
+            window.click("action", cx);
+            for (id, bounds) in ["disabled", "disabled-icon"].into_iter().zip(bounds) {
+                assert_eq!(window.find(id).bounds(), bounds);
+                let before = count.get();
+                window.click(id, cx);
+                if disabled {
+                    assert_eq!(count.get(), before);
+                    assert_eq!(window.find("action").focused(), Some(true));
+                } else {
+                    assert_eq!(window.find(id).focused(), Some(true));
+                    window.press("enter", cx);
+                    window.press("space", cx);
+                    assert_eq!(count.get(), before + 3);
+                }
+            }
+        }
+    });
+}
+
+#[gpui_kit::test]
+fn disabled_actions_expose_disabled_accessibility_without_activation(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Element, RenderOnce, accesskit, canvas};
+    use std::sync::{Arc, Mutex};
+
+    type Captured = Arc<Mutex<Vec<(bool, accesskit::Node)>>>;
+    struct AccessibilityProbe(Captured);
+    impl Render for AccessibilityProbe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let captured = self.0.clone();
+            canvas(
+                move |_, window, cx| {
+                    let mut nodes = captured.lock().unwrap();
+                    nodes.clear();
+                    for disabled in [false, true, false] {
+                        let action =
+                            ActionButton::new("apply", "Apply measured budget and restart")
+                                .disabled(disabled)
+                                .on_click(|_, _, _| {})
+                                .render(window, cx)
+                                .into_element();
+                        assert_eq!(action.id(), Some("apply".into()));
+                        assert_eq!(action.a11y_role(), Some(accesskit::Role::Button));
+                        let mut node = accesskit::Node::new(action.a11y_role().unwrap());
+                        action.write_a11y_info(&mut node);
+                        assert_eq!(node.label(), Some("Apply measured budget and restart"));
+                        nodes.push((disabled, node));
+                        let icon = IconButton::new("settings", "Settings", ActionIcon::Settings)
+                            .disabled(disabled)
+                            .on_click(|_, _, _| {})
+                            .render(window, cx)
+                            .into_element();
+                        assert_eq!(icon.id(), Some("settings".into()));
+                        assert_eq!(icon.a11y_role(), Some(accesskit::Role::Button));
+                        let mut node = accesskit::Node::new(icon.a11y_role().unwrap());
+                        icon.write_a11y_info(&mut node);
+                        assert_eq!(node.label(), Some("Settings"));
+                        nodes.push((disabled, node));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+        }
+    }
+    cx.update(gpui_kit::init);
+    let captured: Captured = Arc::new(Mutex::new(Vec::new()));
+    let result = captured.clone();
+    let (_, cx) = cx.add_window_view(move |_, _| AccessibilityProbe(captured));
+    cx.update(|window, cx| window.render_frame(cx));
+    let nodes = result.lock().unwrap();
+    assert_eq!(nodes.len(), 6);
+    for (disabled, node) in nodes.iter() {
+        assert_eq!(node.role(), accesskit::Role::Button);
+        assert!(node.label().is_some());
+        assert_eq!(node.supports_action(accesskit::Action::Click), !disabled);
+        assert_eq!(node.supports_action(accesskit::Action::Focus), !disabled);
+        assert_eq!(node.is_disabled(), *disabled);
+    }
 }
 
 #[gpui_kit::test]

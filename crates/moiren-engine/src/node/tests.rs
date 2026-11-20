@@ -21,6 +21,7 @@ fn output_config(channels: usize) -> OutputConfig {
 }
 fn context(start: u64, frames: usize) -> ProcessContext {
     ProcessContext {
+        execution: None,
         timeline_epoch: 7,
         timeline_start: start,
         frames,

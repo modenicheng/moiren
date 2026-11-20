@@ -167,6 +167,21 @@ inline bool SameStream(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
         slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
 }
 
+// PCM may be queued after gate admission but before ACX calls Run. Keeping
+// this admission predicate separate from SameStream lets the transfer path
+// remain strict: a request parked during Paused becomes useful only after the
+// matching stream generation is Running.
+inline bool CanQueuePcm(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
+{
+    return slot.Id == request.EndpointId && slot.Session == request.SessionEpoch &&
+        slot.Id == request.EndpointGeneration &&
+        slot.StreamGeneration == request.StreamGeneration &&
+        slot.AdmissionGeneration == request.GateEpoch && slot.GateOpen != 0 &&
+        slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
+        (slot.StreamState == MOIREN_VAD_STREAM_PAUSED ||
+            slot.StreamState == MOIREN_VAD_STREAM_RUNNING);
+}
+
 inline bool CanCommitGateOpen(const Slot& slot, const MOIREN_VAD_GATE_REQUEST& request)
 {
     return SameIdentity(slot, request.Endpoint) &&

@@ -86,6 +86,8 @@ dependencies = [
  "moiren-engine",
  "moiren-windows-audio",
  "rtrb",
+ "serde",
+ "serde_json",
  "thiserror",
  "windows",
 ]

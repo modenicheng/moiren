@@ -1,4 +1,5 @@
 use super::{ServiceRuntime, StudioShell, UiState, pages, theme};
+use crate::service::RunLimit;
 use crate::ui::shell::test_harness::{
     finish_service, initial_projection, settle_panels, shell_with_state, spawn_service, test_shell,
     wait_for, wait_until,
@@ -947,6 +948,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
                 output_endpoint_id: "fixture-output".into(),
                 gain: 0.,
                 pan: 0.,
+                limit: RunLimit::UntilStopped,
                 max_block_frames: 256,
             };
             context.graph.configure_session(&spec).unwrap();
@@ -958,6 +960,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.running(generation, revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
             context.active_latency_profile = Some(context.latency_profile);
+            context.active_transport_latency = Some(context.transport_latency);
         }
         if self.awaiting && self.confirm.load(std::sync::atomic::Ordering::Acquire) {
             self.awaiting = false;
@@ -965,6 +968,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.running(context.core.generation(), revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
             context.active_latency_profile = Some(context.latency_profile);
+            context.active_transport_latency = Some(context.transport_latency);
         }
     }
 

@@ -61,6 +61,27 @@ disables AC/DC sleep and hibernation before launch. It neither installs a driver
 nor changes audio defaults. Each phase lasts continuously within one owning App
 session; repeating short processes is not equivalent.
 
+For a looping WAV supplied through `-PcmFile`, the runner verifies the requested
+signal duration in `soak_music` in the final probe report. The generated signal
+mode records its duration in `soak_pcm`.
+
+The generated signal allows up to one second and 48,000 capture frames for
+settling after each pattern change at 48 kHz. If a packet exhausts the frame
+budget within that second, its remaining frames enter waveform validation.
+The capture stream stays open during settling. A WASAPI discontinuity or a gap
+in the device frame positions fails the soak even when the whole packet falls
+within a settling window. The probe records the fault and continues collecting
+evidence until the run ends.
+
+The native capture client copies each packet into its scratch buffer. Sample
+checks run only after WASAPI accepts the return of the native packet.
+
+When capture packet positions first jump forward, the probe retains that
+packet's sequence number, expected and observed device frames, and the adjacent
+packet QPC timestamps in `native_diagnostics.capture.first_gap`. Use those
+timestamps to align an audio trace with the native capture gap. The evidence
+remains available as subsequent good packets update the rolling counters.
+
 Keep `running.json`, `resources.jsonl`, `stdout.log`, `stderr.log`, the probe's
 periodic progress, its final `report.json`, and the runner's `result.json`.
 The resource log is streamed and flushed; the runner retains no sample array

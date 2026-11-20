@@ -3,6 +3,26 @@ use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "fresh_export_tests.rs"]
+mod fresh_export_tests;
+
+#[cfg(windows)]
+#[path = "measured_tests.rs"]
+mod measured_tests;
+#[cfg(windows)]
+#[path = "process_trace_tests.rs"]
+mod process_trace_tests;
+#[path = "rename_tests.rs"]
+mod rename_tests;
+#[cfg(windows)]
+#[path = "retained_apply_tests.rs"]
+mod retained_apply_tests;
+#[path = "transport_tests.rs"]
+mod transport_tests;
+#[cfg(windows)]
+#[path = "windowed_tests.rs"]
+mod windowed_tests;
+
 struct Rig {
     driver: ManagedDriver,
     c: ServiceContext,
@@ -10,27 +30,61 @@ struct Rig {
     state: Arc<State>,
 }
 
-/// Poll the recording worker's written-frame counter until it passes
-/// `beyond`, returning the observed value. Realtime-render independent, so
-/// loaded CI runners cannot starve the assertion.
-fn wait_written_frames(rig: &mut Rig, recorder: NodeId, beyond: u64) -> u64 {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let frames = rig
-            .driver
-            .recording_sessions
-            .get(&recorder)
-            .map(|recording| recording.session.status().written_frames)
-            .unwrap_or(0);
-        if frames > beyond {
-            return frames;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "written_frames stuck at {frames} (beyond {beyond})"
-        );
-        rig.tick();
-    }
+#[cfg(windows)]
+#[test]
+fn observation_batching_never_retains_a_previous_native_owner() {
+    use crate::service::NativeSessionObservations;
+    use moiren_windows_audio::engine_backend::NativeObservationSnapshot;
+    let mut rig = Rig::new();
+    let generation = SessionGeneration(1);
+    let mut state = host::HostSnapshot {
+        host: host::HostState::Open,
+        execution: ExecutionState::Running,
+        desired_revision: 1,
+        active_revision: Some(1),
+        plan_revision: Some(1),
+        owner_generation: 1,
+        resource_generation: 1,
+        timeline: None,
+        update: UpdateState::Idle,
+        fault: None,
+        cleanup_error: None,
+    };
+    let cached = NativeSessionObservations {
+        generation,
+        observation: NativeObservationSnapshot {
+            owner_generation: 1,
+            running: true,
+            streams: Vec::new(),
+            bridges: Vec::new(),
+            boundary_probes: Vec::new(),
+            render_padding: Vec::new(),
+            process_delivery: Vec::new(),
+            virtual_clock: None,
+            virtual_callback: None,
+        },
+    };
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    rig.c.native_observations = Some(cached.clone());
+    let refreshed = rig.driver.observation_refreshed_at;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert_eq!(rig.c.native_observations, Some(cached.clone()));
+    assert_eq!(rig.driver.observation_refreshed_at, refreshed);
+    state.owner_generation = 2;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(
+        rig.c.native_observations.is_none(),
+        "same app generation must not expose an old native owner"
+    );
+    assert_ne!(rig.driver.observation_refreshed_at, refreshed);
+    rig.c.native_observations = Some(cached.clone());
+    state.execution = ExecutionState::WaitingForResources;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(rig.c.native_observations.is_none());
+    rig.c.native_observations = Some(cached);
+    state.execution = ExecutionState::Running;
+    rig.driver.poll_observations(&mut rig.c, &state, generation);
+    assert!(rig.c.native_observations.is_none());
 }
 
 #[test]
@@ -97,26 +151,43 @@ fn virtual_only_apply_runs_without_physical_session_selectors() {
             && r.c.graph.snapshot().active_revision.is_some()
     });
     assert!(rig.c.core.desired().is_none());
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
+    assert!(
+        rig.c
+            .exports
+            .statuses(&rig.c.graph.snapshot())
+            .iter()
+            .all(|status| { status.resource == ExportResourceState::Present && !status.gate_open })
+    );
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
 }
 
 #[test]
-fn virtual_to_physical_apply_keeps_the_session_intent_across_owner_swaps() {
+fn virtual_to_physical_apply_preserves_explicit_run_limit() {
     let (mut rig, _) = export_rig();
     rig.request(AppRequest::Start(SessionSpec {
         source: InputSelection::Tone {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: RunLimit::Seconds(12),
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
     }));
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
     assert!(rig.c.core.desired().is_none());
+    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
     let generation = rig.c.core.generation();
     rig.request(AppRequest::EditGraph(GraphEdit::SetExports(Vec::new())));
     rig.request(AppRequest::ApplyGraph);
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running && r.c.core.generation() != generation);
+    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
+    rig.driver.owner.as_mut().unwrap().started = Some(Instant::now() - Duration::from_secs(13));
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.cleaning == 0);
 }
 
 fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>) {
@@ -140,7 +211,7 @@ fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>
 }
 
 #[test]
-fn export_presence_does_not_open_gate_until_engine_confirms_and_exit_revokes_it() {
+fn export_presence_does_not_open_gate_until_engine_confirms_and_stop_retains_it() {
     let (mut rig, adapter) = export_rig();
     rig.wait(|r| {
         r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
@@ -166,16 +237,25 @@ fn export_presence_does_not_open_gate_until_engine_confirms_and_exit_revokes_it(
             .iter()
             .any(|(kind, r, _)| kind == "open" && *r == Some(revision))
     );
-    rig.c.core.begin_exit();
-    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    rig.request(AppRequest::Stop);
     assert_eq!(
         adapter.revision.load(Ordering::Acquire),
         0,
-        "Exit invalidates pending gate jobs immediately"
+        "Stop invalidates pending gate jobs immediately"
     );
     rig.wait(|r| {
-        r.driver.is_drained() && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+        r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
     });
+    assert_eq!(
+        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+        ExportResourceState::Present
+    );
+    let calls = adapter.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|(kind, _, thread)| kind != "remove" && thread == "app-prepare")
+    );
 }
 
 #[test]
@@ -383,27 +463,41 @@ fn unapplied_export_unbinding_and_removal_keep_confirmed_resources() {
 }
 
 #[test]
-fn exit_revokes_a_pending_gate_dispatch_without_blocking_pump() {
-    let (mut rig, adapter) = export_rig();
-    adapter.hold_open.store(true, Ordering::Release);
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|_| adapter.open_entered.load(Ordering::Acquire));
-    let started = Instant::now();
-    rig.c.core.begin_exit();
-    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
-    assert!(started.elapsed() < Duration::from_millis(500));
-    assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
-    adapter.hold_open.store(false, Ordering::Release);
-    rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
-    assert!(
-        adapter
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(kind, _, _)| kind != "open")
-    );
-    assert_eq!(rig.c.graph.snapshot().last_error, None);
+fn stop_and_exit_revoke_a_pending_gate_dispatch_without_blocking_pump() {
+    for exiting in [false, true] {
+        let (mut rig, adapter) = export_rig();
+        adapter.hold_open.store(true, Ordering::Release);
+        rig.request(AppRequest::ApplyGraph);
+        rig.wait(|_| adapter.open_entered.load(Ordering::Acquire));
+        let started = Instant::now();
+        if exiting {
+            rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+        } else {
+            rig.request(AppRequest::Stop);
+        }
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
+        adapter.hold_open.store(false, Ordering::Release);
+        if exiting {
+            rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+        } else {
+            rig.wait(|r| r.driver.cleaning == 0 && r.pool.is_idle());
+            assert_eq!(
+                rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+                ExportResourceState::Present
+            );
+            assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+        }
+        assert!(
+            adapter
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(kind, _, _)| kind != "open")
+        );
+        assert_eq!(rig.c.graph.snapshot().last_error, None);
+    }
 }
 
 #[test]
@@ -469,6 +563,7 @@ fn runtime_device_absence_degrades_and_recovers_without_a_failed_phase() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -685,7 +780,7 @@ fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation()
     ] {
         let (mut rig, _) = export_rig();
         let backend = FakeBackend(rig.state.clone());
-        rig.driver.f64_factory = Some(Arc::new(move |_, _| Ok(Box::new(backend.clone()))));
+        rig.driver.f64_factory = Some(Arc::new(move |_, _, _, _| Ok(Box::new(backend.clone()))));
         let mut settings = AudioSettings::default();
         settings.processing.precision = precision;
         settings.processing.sample_rate = 44_100;
@@ -701,11 +796,14 @@ fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation()
             rig.c.exports.statuses(&rig.c.graph.snapshot())[0].active_revision,
             rig.c.graph.snapshot().active_revision
         );
-        rig.c.core.begin_exit();
-        rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+        rig.request(AppRequest::Stop);
         rig.wait(|r| {
-            r.driver.is_drained() && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+            r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
         });
+        assert_eq!(
+            rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+            ExportResourceState::Present
+        );
     }
 }
 
@@ -813,6 +911,7 @@ fn invalid_start_candidate_keeps_the_confirmed_export_admission() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -918,8 +1017,7 @@ fn audio_settings_are_draft_until_apply_and_restart_reaps_previous_owner() {
     assert_ne!(rig.c.core.generation(), first_generation);
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
     assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);
-    rig.c.core.begin_exit();
-    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    rig.request(AppRequest::Stop);
     assert_eq!(rig.c.active_audio_settings, None);
     rig.wait(|r| r.driver.is_drained());
 }
@@ -949,7 +1047,7 @@ fn invalid_audio_settings_preserve_requested_and_running_configuration() {
     let mut rig = Rig::new();
     rig.start();
     let mut settings = AudioSettings::default();
-    settings.input.buffer_frames = Some(96);
+    settings.input.buffer_frames = Some(63);
     rig.request(AppRequest::SetAudioSettings(settings));
     assert_eq!(rig.c.audio_settings, AudioSettings::default());
     assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));
@@ -965,6 +1063,7 @@ fn start_session_block_size_matches_requested_and_confirmed_processing() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 512,
@@ -1064,13 +1163,13 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         assert!(Instant::now() < deadline);
         rig.tick();
     }
-    let source = rig.c.signals.topics.node_levels[&gain].clone();
-    assert_eq!(source.business_subscribers(), 0);
+    let topic = rig.c.signals.topics.node_levels[&gain].clone();
+    assert_eq!(topic.business_subscribers(), 0);
     assert_eq!(
         rig.c.signals.topics.node_levels[&pan].business_subscribers(),
         0
     );
-    let lease = source.subscribe();
+    let lease = topic.subscribe();
     rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
         node: gain,
         state: crate::service::MixerState {
@@ -1081,13 +1180,15 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     rig.request(AppRequest::ApplyGraph);
     loop {
         rig.tick();
-        let mut matched = false;
-        lease.read_latest(|_epoch, window| {
-            matched |= window.header().frame_end > window.header().frame_start
-                && window.elements().iter().all(|level| {
-                    (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
-                });
-        });
+        rig.c.signals.pump_if_due(Instant::now());
+        let matched = lease
+            .read_latest(|_, window| {
+                window.header().frame_end > window.header().frame_start
+                    && window.elements().iter().all(|level| {
+                        (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
+                    })
+            })
+            .unwrap_or(false);
         if matched {
             break;
         }
@@ -1102,7 +1203,7 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
         0
     );
     drop(lease);
-    assert_eq!(source.business_subscribers(), 0);
+    assert_eq!(topic.business_subscribers(), 0);
 }
 
 /// A running rig with a spectrum analyzer spliced between the pan and the
@@ -1244,11 +1345,11 @@ fn fft_resize_reregisters_the_spectrum_topic() {
     assert_eq!(rig.c.signals.topics.node_spectra.len(), 1);
 }
 
-/// A departing node's tap must leave the registry (and the snapshot's
-/// node map) without a trace and without an error, so the UI's resolve
-/// drops the subscription instead of chasing a dead tap.
+/// A topic only closes once no publisher leases it. The bridge must let go
+/// of a departed node's slot — and activate a table without it — before
+/// asking the bus to unregister, or every later poll fails the same way.
 #[test]
-fn removing_a_node_closes_its_level_tap_without_stalling_the_registry() {
+fn removing_a_node_closes_its_level_topic_without_stalling_the_bridge() {
     let mut rig = Rig::new();
     rig.start();
     rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
@@ -1430,50 +1531,6 @@ fn failed_auto_apply_keeps_audio_running_and_the_next_edit_retries() {
     assert_eq!(rig.sample(), 0.5);
 }
 
-/// Design 23 §6 (audit fact F6, the ghost rewrite): with no selection ledger
-/// left to mirror, clearing the primary Source's binding and starting by
-/// graph leaves the node unbound, fails on the node it names, and repairs
-/// cleanly once the binding is restored.
-#[test]
-fn clearing_the_primary_source_binding_fails_on_the_node_and_repairs_cleanly() {
-    let mut rig = Rig::new();
-    rig.start();
-    let source = rig.node(NodeKind::Source);
-    rig.request(AppRequest::EditGraph(GraphEdit::ClearBinding(source)));
-    rig.request(AppRequest::ApplyGraph);
-    // The always-on session keeps running: the rejection lands on the node
-    // it names instead of stopping audio.
-    rig.wait(|r| {
-        r.c.core.phase() == SessionPhase::Running && !r.c.graph.snapshot().faults.is_empty()
-    });
-    let snapshot = rig.c.graph.snapshot();
-    assert!(
-        snapshot
-            .nodes
-            .iter()
-            .find(|entry| entry.id == source)
-            .unwrap()
-            .source
-            .is_none(),
-        "nothing rewrites a stale selection back into the node"
-    );
-    assert!(snapshot.faults.iter().any(|fault| {
-        fault.subject == GraphSubject::Node(source)
-            && fault.cause == "The Source node is not bound to an input source"
-    }));
-    // The repair clears the fault group on the next successful edit, and
-    // the following apply runs the repaired graph.
-    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
-        node: source,
-        source: InputSelection::Tone {
-            frequency_hz: 440.0,
-        },
-    }));
-    rig.wait(|r| r.c.graph.snapshot().faults.is_empty());
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
-}
-
 #[test]
 fn solo_edits_fan_out_live_strip_mutes_to_parallel_sources() {
     let mut rig = Rig::new();
@@ -1578,6 +1635,7 @@ impl Rig {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
             gain: 1.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -2009,7 +2067,7 @@ fn loaded_document_equal_node_ids_cannot_control_previous_project() {
 }
 
 #[test]
-fn exit_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
+fn stop_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
     let mut r = Rig::new();
     r.start();
     r.state.block_update.store(true, Ordering::SeqCst);
@@ -2019,10 +2077,9 @@ fn exit_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
     }));
     r.request(AppRequest::ApplyGraph);
     r.wait(|r| r.state.prepares.load(Ordering::SeqCst) >= 2);
-    r.c.core.begin_exit();
-    r.driver.begin_exit(&mut r.c, &mut r.pool);
+    r.request(AppRequest::Stop);
     assert_eq!(r.c.active_latency_profile, None);
-    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Exiting);
+    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
     assert!(
         r.state
@@ -2037,114 +2094,34 @@ fn exit_cancels_pending_preparation_and_destroys_owners_off_service_thread() {
 #[test]
 fn legacy_meter_subscription_receives_managed_host_audio_windows() {
     let mut r = Rig::new();
-    // Demand exists before the session: the lease counts, and the
-    // registry binds the engine subscription on the first poll with an
-    // owner.
     let lease = r.c.signals.topics.tone_output.subscribe();
     r.start();
     r.wait(|r| {
-        r.driver
-            .spectra
-            .as_ref()
-            .is_some_and(|_| r.state.last_sample.load(Ordering::SeqCst) != 0)
+        r.driver.owner.as_ref().is_some_and(|_| {
+            lease
+                .read_latest(|_, window| window.header().frame_end > 0)
+                .is_some()
+        })
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         r.tick();
-        let mut delivered = false;
-        lease.read_latest(|_epoch, window| {
-            assert_eq!(window.elements()[0].peak, 1.0);
-            assert_eq!(window.elements()[0].rms, 1.0);
-            assert!(window.header().frame_end > window.header().frame_start);
-            delivered = true;
-        });
-        if delivered {
+        if let Some((_, window)) = lease.read_latest(|epoch, window| {
+            (
+                epoch,
+                (window.header().frame_end > window.header().frame_start)
+                    .then(|| window.elements().to_vec()),
+            )
+        }) && let Some(levels) = window
+            && levels.len() == 2
+            && levels
+                .iter()
+                .all(|level| (level.peak - 1.0).abs() < 1e-6 && (level.rms - 1.0).abs() < 1e-6)
+        {
             break;
         }
         assert!(Instant::now() < deadline, "managed meter did not publish");
     }
-}
-
-/// Decision D-4 route B regression (the deleted relay gate's semantic on
-/// the direct path): a UI lease reads the engine's windows with no relay
-/// copy in between, keeps receiving them across a graph hot swap, releases
-/// the engine demand completely when dropped, and a re-shown lease picks
-/// fresh windows immediately while a sibling lease kept the topic warm.
-#[test]
-fn direct_level_lease_delivers_windows_across_hot_swap_and_hide_show() {
-    let mut rig = Rig::new();
-    rig.start();
-    let sink = rig.node(NodeKind::Sink);
-    rig.wait(|rig| rig.c.signals.topics.node_levels.contains_key(&sink));
-    let source = rig.c.signals.topics.node_levels[&sink].clone();
-    let mut lease = source.subscribe();
-    rig.wait(|rig| rig.c.levels.demanded_levels() == 1);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let last_frame_end = loop {
-        rig.tick();
-        if let Some(header) = lease.read_latest(|_epoch, window| *window.header()) {
-            assert!(header.timeline_epoch != 0);
-            assert!(header.frame_end > header.frame_start);
-            break header.frame_end;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "direct lease received no windows"
-        );
-    };
-    // A sibling lease stands in for an independent analysis reader.
-    let analysis = source.subscribe();
-    assert_eq!(source.business_subscribers(), 2);
-    // Graph hot swap: the plan rebuilds in place, and the window stream
-    // must not stall (this continuity is why the relay existed).
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Bus,
-        channels: 2,
-    }));
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|rig| {
-        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
-    });
-    let deadline = Instant::now() + Duration::from_secs(8);
-    loop {
-        rig.tick();
-        if lease
-            .read_latest(|_epoch, window| window.header().frame_end > last_frame_end)
-            .unwrap_or(false)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "windows stalled across the hot swap: {:?}",
-            rig.c.graph.snapshot().last_error
-        );
-    }
-    // Hide: dropping the lease releases its engine subscription outright.
-    drop(lease);
-    rig.wait(|rig| rig.c.levels.demanded_levels() == 1);
-    assert_eq!(source.business_subscribers(), 1);
-    // Show again: the fresh lease must reach windows without a generation
-    // reset, and the frames keep advancing past everything seen before.
-    lease = source.subscribe();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        rig.tick();
-        if lease
-            .read_latest(|_epoch, window| window.header().frame_end > last_frame_end)
-            .unwrap_or(false)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "re-shown lease received no windows"
-        );
-    }
-    drop(lease);
-    drop(analysis);
-    rig.wait(|rig| rig.c.levels.demanded_levels() == 0);
-    assert_eq!(source.business_subscribers(), 0);
 }
 
 #[test]
@@ -2229,7 +2206,7 @@ fn profile_selection_waits_until_apply_and_replaces_the_host() {
 }
 
 #[test]
-fn unavailable_resources_report_diagnostics_and_exit_drains_the_host() {
+fn unavailable_resources_report_diagnostics_and_stop_cancels_host() {
     let mut r = Rig::new();
     r.state.unavailable.store(true, Ordering::SeqCst);
     r.request(AppRequest::Start(SessionSpec {
@@ -2237,6 +2214,7 @@ fn unavailable_resources_report_diagnostics_and_exit_drains_the_host() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "missing".into(),
+        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -2245,8 +2223,7 @@ fn unavailable_resources_report_diagnostics_and_exit_drains_the_host() {
     assert_ne!(r.c.core.phase(), SessionPhase::Running);
     assert_eq!(r.c.graph.snapshot().active_revision, None);
     assert_eq!(r.c.active_latency_profile, None);
-    r.c.core.begin_exit();
-    r.driver.begin_exit(&mut r.c, &mut r.pool);
+    r.request(AppRequest::Stop);
     r.wait(|r| r.driver.is_drained());
     assert_eq!(r.state.starts.load(Ordering::SeqCst), 0);
 }
@@ -2284,6 +2261,7 @@ fn initial_resource_recovery_restores_confirmed_revision_and_phase() {
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -2354,6 +2332,7 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
             gain: 0.5,
             pan: 0.0,
             // The processing capacity must use a supported block size; the
@@ -2362,7 +2341,7 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         }))
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(8);
-    let source = loop {
+    let topic = loop {
         if let Some(snapshot) = handle.try_snapshot()
             && snapshot.phase == SessionPhase::Running
         {
@@ -2371,13 +2350,11 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         assert!(Instant::now() < deadline, "service did not start");
         std::thread::sleep(Duration::from_millis(1));
     };
-    // The registry binds the engine subscription on its first poll; the
-    // lease reads the newest window directly (one copy, no relay).
-    let lease = source.subscribe();
+    let lease = topic.subscribe();
     let mut ages = Vec::new();
     let mut sequences = Vec::new();
     let mut observed_windows = 0;
-    let mut latest_frame_end = None;
+    let mut latest_frame_end = 0_u64;
     let mut missing_updates = 0;
     let period = Duration::from_secs_f64(1.0 / 120.0);
     let mut next = Instant::now() + period;
@@ -2385,28 +2362,29 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
     for frame in 0..150 {
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         next += period;
-        let received = lease
-            .read_latest(|_epoch, window| {
-                observed_windows += 1;
-                assert_eq!(window.header().frame_end - window.header().frame_start, 200);
-                (
-                    window.header().frame_end,
-                    frame >= 30,
-                    window.meta().sequence,
-                )
-            })
-            .map(|(frame_end, counted, sequence)| {
-                latest_frame_end = Some(frame_end);
-                if counted {
-                    sequences.push(sequence);
-                }
-            })
-            .is_some();
+        let Some((epoch, levels)) = lease.read_latest(|epoch, window| {
+            (
+                epoch,
+                (window.header().frame_end - window.header().frame_start == 200)
+                    .then(|| (window.header().frame_end, window.meta().sequence)),
+            )
+        }) else {
+            continue;
+        };
+        let Some((frame_end, sequence)) = levels else {
+            continue;
+        };
+        let received = true;
+        observed_windows += 1;
+        latest_frame_end = latest_frame_end.max(frame_end);
+        if frame >= 30 {
+            sequences.push((epoch, sequence));
+        }
         if frame >= 30 {
             missing_updates += usize::from(!received);
             let read_at = Instant::now();
             let history = state.render_history.lock().unwrap();
-            if let Some(frame_end) = latest_frame_end
+            if latest_frame_end > 0
                 && let Some((_, published_at)) = history.iter().find(|(end, _)| *end >= frame_end)
             {
                 // Include cached-window age when this tick receives nothing.
@@ -2449,7 +2427,9 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         sequences.last()
     );
     assert!(
-        sequences.windows(2).all(|pair| pair[1] > pair[0]),
+        sequences
+            .windows(2)
+            .all(|pair| pair[0].0 == pair[1].0 && pair[0].1 < pair[1].1),
         "new deliveries replayed an old sequence"
     );
     assert!(
@@ -2489,6 +2469,7 @@ fn service_exit_joins_managed_host_and_preserves_retained_observer_diagnostics()
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
             gain: 0.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -2638,6 +2619,7 @@ fn backend_factory_panic_is_a_failed_snapshot_and_service_can_exit() {
                 frequency_hz: 440.0,
             },
             output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
             gain: 0.0,
             pan: 0.0,
             max_block_frames: 256,
@@ -2722,38 +2704,7 @@ fn undo_restored_candidates_rebuild_after_the_debounce() {
 }
 
 #[test]
-fn auto_apply_reopens_a_failed_session_once_the_fault_is_repaired() {
-    let mut rig = Rig::new();
-    // No owner and an unbound default graph: the automatic apply fails on
-    // the nodes instead of opening a host.
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Bus,
-        channels: 2,
-    }));
-    let deadline = Instant::now() + Duration::from_millis(400);
-    while Instant::now() < deadline {
-        rig.tick();
-    }
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
-    assert!(rig.driver.owner.is_none());
-    // Repairing the bindings is itself a structural edit: the always-on
-    // auto-apply re-opens the session without an explicit request.
-    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
-        node: rig.node(NodeKind::Source),
-        source: InputSelection::Tone {
-            frequency_hz: 440.0,
-        },
-    }));
-    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
-        node: rig.node(NodeKind::Sink),
-        endpoint_id: "output".into(),
-    }));
-    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
-    assert!(rig.driver.owner.is_some());
-}
-
-#[test]
-fn undo_on_a_running_session_restores_the_candidate_and_reapplies_it() {
+fn undo_after_stop_restores_the_candidate_without_restarting_audio() {
     let mut rig = Rig::new();
     rig.start();
     rig.wait(|rig| {
@@ -2767,19 +2718,18 @@ fn undo_on_a_running_session_restores_the_candidate_and_reapplies_it() {
     rig.wait(|rig| {
         rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
     });
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
+    let starts = rig.state.starts.load(Ordering::SeqCst);
     rig.request(AppRequest::UndoGraph);
-    // Drain the debounce window: the candidate restores and auto-applies,
-    // keeping the always-on session on the restored graph.
+    // Drain any debounce window: the candidate restores, audio stays off.
     let deadline = Instant::now() + Duration::from_millis(400);
     while Instant::now() < deadline {
         rig.tick();
     }
-    rig.wait(|rig| {
-        rig.c.graph.snapshot().nodes.len() == nodes_before
-            && rig.c.graph.snapshot().active_revision
-                == Some(rig.c.graph.snapshot().candidate_revision)
-    });
-    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert_eq!(rig.c.graph.snapshot().nodes.len(), nodes_before);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
 }
 
 /// Catalog fake driving `with_catalog`: rows or a sticky failure, never a session.
@@ -2846,12 +2796,13 @@ fn catalog_rig(catalog: Arc<FakeCatalog>, automatic_startup: bool) -> Rig {
 }
 
 #[test]
-fn automatic_startup_uses_catalog_defaults_once_and_catalog_refreshes_do_not_restart() {
+fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
     let mut rig = catalog_rig(Arc::new(FakeCatalog::filled()), true);
     rig.tick();
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
     let desired = rig.c.core.desired().expect("default session").clone();
     assert_eq!(desired.gain, 0.0);
+    assert_eq!(desired.limit, crate::service::RunLimit::UntilStopped);
     assert_eq!(
         desired.source,
         crate::service::InputSelection::Physical {
@@ -2859,11 +2810,13 @@ fn automatic_startup_uses_catalog_defaults_once_and_catalog_refreshes_do_not_res
         }
     );
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.is_drained());
     let generation = rig.c.core.generation();
     rig.request(AppRequest::RefreshCatalog);
     rig.wait(|r| r.c.catalog_error.is_none() && r.c.catalog.outputs.len() == 1);
     assert_eq!(rig.c.core.generation(), generation);
-    assert!(rig.c.core.desired().is_some());
+    assert!(rig.c.core.desired().is_none());
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
 }
 
@@ -2917,47 +2870,6 @@ fn restored_document(
         .unwrap();
     extend(&mut graph);
     crate::project::ProjectDocument::from_graph("Restored", &graph.snapshot()).unwrap()
-}
-
-/// Design 23 §4.3: documents that predate the `processing` field carry the
-/// block size on the session, because the deleted UI ledger used to ferry it
-/// into a Start request. `load_project` migrates it so start-by-graph opens
-/// with the size the project was saved with; explicit processing stays
-/// authoritative when both forms are present.
-#[test]
-fn loading_a_legacy_document_migrates_the_session_block_size() {
-    let legacy_session = SessionSpec {
-        source: InputSelection::Tone {
-            frequency_hz: 440.0,
-        },
-        output_endpoint_id: "output".into(),
-        gain: 1.0,
-        pan: 0.0,
-        max_block_frames: 512,
-    };
-    let mut document = restored_document(|_| {});
-    document.processing = None;
-    document.session = Some((&legacy_session).into());
-    let mut context = ServiceContext::default();
-    context
-        .load_project(document)
-        .expect("legacy document loads");
-    assert_eq!(context.audio_settings.processing.block_frames, 512);
-
-    let mut document = restored_document(|_| {});
-    document.session = Some((&legacy_session).into());
-    document.processing = Some(moiren_engine::audio_config::ProcessingSettings {
-        block_frames: 128,
-        ..Default::default()
-    });
-    let mut context = ServiceContext::default();
-    context
-        .load_project(document)
-        .expect("mixed document loads");
-    assert_eq!(
-        context.audio_settings.processing.block_frames, 128,
-        "explicit processing wins over the session block size"
-    );
 }
 
 fn add_physical_source(graph: &mut crate::service::ServiceGraph, label: &str, endpoint_id: &str) {
@@ -3022,23 +2934,22 @@ fn restored_project_resumes_with_its_own_bindings_once_the_catalog_arrives() {
 }
 
 #[test]
-fn resume_keeps_offline_secondary_sources_in_the_graph() {
+fn resume_strips_offline_secondary_sources_and_reports_once_running() {
     let document = restored_document(|graph| {
         add_physical_source(graph, "Unplugged mic", "missing-input");
     });
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
-    let before = rig.c.graph.snapshot();
+    let before = rig.c.graph.snapshot().candidate_revision;
     rig.tick();
     rig.wait(|r| r.c.core.phase() == SessionPhase::Running && settled(r));
     let snapshot = rig.c.graph.snapshot();
-    // The absent device stays bound to its node: the backend runs it as a
-    // silent null stream instead of the session dropping topology, so the
-    // saved document keeps the node across sessions.
-    assert_eq!(
-        snapshot.candidate_revision, before.candidate_revision,
-        "resume edits nothing"
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .all(|node| node.label != "Unplugged mic"),
+        "the offline source leaves so the rest of the graph can run"
     );
-    assert_eq!(snapshot.graph.nodes().len(), before.graph.nodes().len());
     assert_eq!(
         snapshot
             .graph
@@ -3046,13 +2957,51 @@ fn resume_keeps_offline_secondary_sources_in_the_graph() {
             .iter()
             .filter(|node| node.kind() == NodeKind::Source)
             .count(),
-        2
+        1
+    );
+    assert_eq!(
+        snapshot.candidate_revision,
+        before + 1,
+        "one strip, one edit"
     );
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    // The notice lands only after activation, which clears the fault group.
+    rig.wait(|r| !r.c.graph.snapshot().faults.is_empty());
+    let faults = rig.c.graph.snapshot().faults;
+    assert_eq!(faults.len(), 1);
+    assert_eq!(faults[0].subject, GraphSubject::Graph);
+    assert!(
+        faults[0].cause.contains("'Unplugged mic' (input)"),
+        "{}",
+        faults[0].cause
+    );
+    assert!(
+        faults[0]
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("undo"))
+    );
+    rig.tick();
+    rig.tick();
+    assert_eq!(
+        rig.c.graph.snapshot().faults.len(),
+        1,
+        "periodic confirmation must not clear the published notice"
+    );
+    // The strip is an ordinary journaled edit: undo brings the node back.
+    rig.request(AppRequest::UndoGraph);
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .nodes
+            .iter()
+            .any(|node| node.label == "Unplugged mic")
+    );
 }
 
 #[test]
-fn resume_keeps_the_last_offline_source_and_starts_anyway() {
+fn resume_never_strips_the_last_source_and_leaves_its_device_to_the_host() {
     let document = restored_document(|graph| {
         let source = graph
             .snapshot()
@@ -3072,9 +3021,8 @@ fn resume_keeps_the_last_offline_source_and_starts_anyway() {
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), document);
     let before = rig.c.graph.snapshot();
     rig.tick();
-    // The apply still goes out: a real backend prepares the absent input
-    // as a silent null stream and the session runs degraded until the
-    // device returns.
+    // The apply still goes out: a real host parks in WaitingForResources
+    // and recovers when the device returns, which stripping would forfeit.
     rig.wait(|r| r.state.starts.load(Ordering::SeqCst) == 1);
     let snapshot = rig.c.graph.snapshot();
     assert_eq!(snapshot.candidate_revision, before.candidate_revision);
@@ -3085,20 +3033,18 @@ fn resume_keeps_the_last_offline_source_and_starts_anyway() {
             endpoint_id: "missing-input".into()
         })
     );
+    assert!(snapshot.last_error.is_none());
 }
 
 #[test]
-fn explicit_apply_before_the_catalog_cancels_automatic_resume() {
+fn explicit_requests_before_the_catalog_cancel_automatic_resume() {
     let mut rig = resume_rig(Arc::new(FakeCatalog::filled()), restored_document(|_| {}));
-    rig.request(AppRequest::ApplyGraph);
+    rig.request(AppRequest::Stop);
     rig.tick();
-    rig.wait(|r| {
-        r.c.catalog.outputs.len() == 1
-            && !r.driver.catalog.is_running()
-            && r.c.core.phase() == SessionPhase::Running
-    });
+    rig.wait(|r| r.c.catalog.outputs.len() == 1 && !r.driver.catalog.is_running());
     assert!(!rig.driver.automatic_resume);
-    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -3124,6 +3070,7 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
             frequency_hz: 440.0,
         },
         output_endpoint_id: "output".into(),
+        limit: crate::service::RunLimit::UntilStopped,
         gain: 1.0,
         pan: 0.0,
         max_block_frames: 256,
@@ -3143,268 +3090,24 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
 }
 
 #[test]
-fn zero_signal_demand_still_applies_controls_and_retires_across_owner_swaps() {
+fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
     let mut r = Rig::new();
-    let source = r.c.signals.topics.tone_output.clone();
+    let topic = r.c.signals.topics.tone_output.clone();
     r.start();
     r.request(AppRequest::SetGainPan {
         gain: 0.008,
         pan: 0.5,
     });
     r.wait(|r| r.c.control.accepted_pending == 0 && r.c.control.last_result.is_some());
-    assert_eq!(source.business_subscribers(), 0);
-    assert_eq!(r.c.levels.demanded_levels(), 0);
-    // A transport-level change swaps the owner: the level registry retires
-    // with the old owner and rebinds cleanly on the replacement.
-    let generation = r.c.core.generation();
-    let mut settings = AudioSettings::default();
-    settings.processing.block_frames = 512;
-    r.request(AppRequest::SetAudioSettings(settings));
-    r.request(AppRequest::ApplyGraph);
-    r.wait(|r| r.c.core.phase() == SessionPhase::Running && r.c.core.generation() != generation);
-    assert_eq!(r.c.levels.demanded_levels(), 0);
+    assert_eq!(topic.business_subscribers(), 0);
+    assert_eq!(topic.held_subscriptions(), 0);
+    r.request(AppRequest::Stop);
+    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
+    assert_eq!(topic.held_subscriptions(), 0);
     assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
-    assert_eq!(source.business_subscribers(), 0);
-}
-
-#[test]
-fn recording_requests_run_pause_and_finalize_through_the_service_domain() {
-    let mut rig = Rig::new();
-    rig.start();
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Recorder,
-        channels: 2,
-    }));
-    rig.wait(|r| {
-        let graph = r.c.graph.snapshot_ref();
-        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
-    });
-    let recorder = rig.node(NodeKind::Recorder);
-    let directory = std::env::temp_dir();
-
-    rig.request(AppRequest::StartRecording {
-        node: recorder,
-        directory: directory.clone(),
-        format: crate::service::RecordingFormat::Wav,
-        mp3: Default::default(),
-        flac: Default::default(),
-    });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
-    // A second start while live is ignored; the first file keeps running.
-    rig.request(AppRequest::StartRecording {
-        node: recorder,
-        directory,
-        format: crate::service::RecordingFormat::Wav,
-        mp3: Default::default(),
-        flac: Default::default(),
-    });
-    rig.tick();
-    assert_eq!(
-        rig.c.recordings.phase(recorder),
-        Some(RecordingPhase::Recording)
-    );
-
-    rig.request(AppRequest::PauseRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Paused));
-    rig.request(AppRequest::ResumeRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
-    rig.request(AppRequest::StopRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
-
-    let snapshot = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .expect("a terminal recording keeps its entry");
-    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-    assert!(
-        snapshot.file_name.starts_with("moiren-rec-") && !snapshot.file_name.contains(' '),
-        "unexpected file name: {}",
-        snapshot.file_name
-    );
-    assert!(
-        snapshot.path.exists(),
-        "{} was not finalized",
-        snapshot.path.display()
-    );
-    let _ = std::fs::remove_file(&snapshot.path);
-}
-
-#[test]
-fn recording_survives_owner_swaps_and_continues_the_same_file() {
-    // A private directory: parallel recording tests share the temp root and
-    // second-resolution file names, so a neighbor's cleanup could race this
-    // test's final existence assertion.
-    let directory = std::env::temp_dir().join("moiren-rebind-continuity-test");
-    std::fs::create_dir_all(&directory).unwrap();
-    let mut rig = Rig::new();
-    rig.start();
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Recorder,
-        channels: 2,
-    }));
-    rig.wait(|r| {
-        let graph = r.c.graph.snapshot_ref();
-        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
-    });
-    let recorder = rig.node(NodeKind::Recorder);
-    rig.request(AppRequest::StartRecording {
-        node: recorder,
-        directory: directory.clone(),
-        format: crate::service::RecordingFormat::Wav,
-        mp3: Default::default(),
-        flac: Default::default(),
-    });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
-    let first = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .unwrap();
-    // Tape a first span from the initial owner. Anchoring on written-frame
-    // growth instead of recorded seconds keeps the test honest on loaded
-    // runners where the realtime renderer is starved.
-    let first_frames = wait_written_frames(&mut rig, recorder, 0);
-
-    // A transport-level change swaps the owner: the session parks on its
-    // open file (Rebinding) and continues automatically once the
-    // replacement owner runs.
-    let generation = rig.c.core.generation();
-    let mut settings = AudioSettings::default();
-    settings.processing.block_frames = 512;
-    rig.request(AppRequest::SetAudioSettings(settings));
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|r| {
-        r.c.core.phase() == SessionPhase::Running
-            && r.c.core.generation() != generation
-            && r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording)
-    });
-
-    // The file is the same one and keeps growing across the swap.
-    let resumed = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .unwrap();
-    assert_eq!(resumed.path, first.path);
-    assert_eq!(resumed.file_name, first.file_name);
-    wait_written_frames(&mut rig, recorder, first_frames);
-
-    rig.request(AppRequest::StopRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
-    let snapshot = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .expect("a terminal recording keeps its entry");
-    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-    assert!(snapshot.path.exists(), "{}", snapshot.path.display());
-    let _ = std::fs::remove_file(&snapshot.path);
-    let _ = std::fs::remove_dir(&directory);
-}
-
-#[test]
-fn mp3_recording_start_finalizes_a_playable_file_through_the_service_domain() {
-    let mut rig = Rig::new();
-    rig.start();
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Recorder,
-        channels: 2,
-    }));
-    rig.wait(|r| {
-        let graph = r.c.graph.snapshot_ref();
-        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
-    });
-    let recorder = rig.node(NodeKind::Recorder);
-    rig.request(AppRequest::StartRecording {
-        node: recorder,
-        directory: std::env::temp_dir(),
-        format: crate::service::RecordingFormat::Mp3,
-        // Deliberately off-default knobs prove the settings ride the
-        // request into the encoder, not just the default path.
-        mp3: moiren_engine::recorder::Mp3Encoding {
-            bitrate_kbps: 192,
-            mode: moiren_engine::recorder::Mp3Mode::Vbr { quality: 4 },
-        },
-        flac: Default::default(),
-    });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
-    rig.request(AppRequest::StopRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
-    let snapshot = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .expect("a terminal recording keeps its entry");
-    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-    assert!(
-        snapshot.file_name.ends_with(".mp3"),
-        "{}",
-        snapshot.file_name
-    );
-    assert!(
-        snapshot.path.exists(),
-        "{} missing",
-        snapshot.path.display()
-    );
-    let bytes = std::fs::read(&snapshot.path).unwrap();
-    let tagged = bytes.len() >= 3 && &bytes[..3] == b"ID3";
-    let synced = bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0;
-    assert!(tagged || synced, "not an MP3 stream");
-    let _ = std::fs::remove_file(&snapshot.path);
-}
-
-#[test]
-fn flac_recording_start_finalizes_a_playable_file_through_the_service_domain() {
-    let mut rig = Rig::new();
-    rig.start();
-    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
-        kind: NodeKind::Recorder,
-        channels: 2,
-    }));
-    rig.wait(|r| {
-        let graph = r.c.graph.snapshot_ref();
-        graph.preparing_nodes.is_empty() && graph.active_revision.is_some()
-    });
-    let recorder = rig.node(NodeKind::Recorder);
-    rig.request(AppRequest::StartRecording {
-        node: recorder,
-        directory: std::env::temp_dir(),
-        format: crate::service::RecordingFormat::Flac,
-        mp3: Default::default(),
-        // An off-default level proves the setting rides the request into the
-        // encoder; level 0 also exercises the smallest block preset.
-        flac: moiren_engine::recorder::FlacEncoding { level: 0 },
-    });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Recording));
-    rig.request(AppRequest::StopRecording { node: recorder });
-    rig.wait(|r| r.c.recordings.phase(recorder) == Some(RecordingPhase::Finished));
-    let snapshot = rig
-        .c
-        .recordings
-        .snapshots()
-        .into_iter()
-        .find(|snapshot| snapshot.node == recorder)
-        .expect("a terminal recording keeps its entry");
-    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
-    assert!(
-        snapshot.file_name.ends_with(".flac"),
-        "{}",
-        snapshot.file_name
-    );
-    // The file opens with the FLAC stream marker; decode-level verification
-    // lives with the engine sink's own round-trip tests.
-    let bytes = std::fs::read(&snapshot.path).unwrap();
-    assert!(bytes.starts_with(b"fLaC"), "not a FLAC stream");
-    let _ = std::fs::remove_file(&snapshot.path);
+    // A clean retirement leaves the signal bus reusable for the next session.
+    r.start();
+    r.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert_eq!(topic.business_subscribers(), 0);
+    assert_eq!(topic.held_subscriptions(), 0);
 }

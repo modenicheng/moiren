@@ -1,9 +1,16 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
-param([switch]$Analyze)
+param(
+    [switch]$Analyze,
+    [ValidateSet('0', '1')]
+    [string]$PlaybackCopyDiagnostic = '0'
+)
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $buildRoot = Join-Path $projectRoot 'build'
+if ($PlaybackCopyDiagnostic -eq '1') {
+    $buildRoot = Join-Path $buildRoot 'playback-copy-1'
+}
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -26,6 +33,7 @@ try {
     & $msbuild (Join-Path $projectRoot 'MoirenVad.vcxproj') /m:1 /t:Build `
         /p:Configuration=Debug /p:Platform=x64 /p:PreferredToolArchitecture=x64 `
         /p:SignMode=Off /p:Inf2CatUseLocalTime=true `
+        "/p:MoirenVadPlaybackCopyDiagnostic=$PlaybackCopyDiagnostic" `
         "/p:RunCodeAnalysis=$($Analyze.IsPresent.ToString().ToLowerInvariant())" `
         /verbosity:minimal /nologo `
         "/flp:logfile=$buildRoot\build.log;verbosity=normal"

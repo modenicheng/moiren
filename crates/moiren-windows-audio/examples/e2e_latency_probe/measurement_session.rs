@@ -1,0 +1,2370 @@
+//! Control-side independent measurement ownership, not source supervision.
+
+use crate::measurement_sink::{EvidenceSink, SinkReport};
+use anyhow::{Context, Result, ensure};
+use moiren_windows_audio::capture::{CaptureReport, PcmEvidenceFrame};
+#[cfg(windows)]
+use std::fmt;
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+const NATIVE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_FAILURE_BYTES: usize = 16 * 1024;
+
+/// Control/teardown call windows in the recorder's QPC 100ns domain. They are
+/// not packet arrival times or an association with a driver silence increment.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub(crate) struct CallWindow {
+    attempted: bool,
+    before_qpc_100ns: Option<u64>,
+    after_qpc_100ns: Option<u64>,
+    outcome: Option<CallOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CallOutcome {
+    Succeeded,
+    ReturnedError,
+    Panicked,
+}
+
+impl CallWindow {
+    pub(crate) fn observe<T, E>(&mut self, call: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        let clock = moiren_windows_audio::latency::QpcClock::new();
+        self.observe_with(&mut || clock.as_ref().and_then(|clock| clock.now()), call)
+    }
+
+    fn observe_with<T, E>(
+        &mut self,
+        now: &mut impl FnMut() -> Option<u64>,
+        call: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        self.attempted = true;
+        self.before_qpc_100ns = now();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(call));
+        self.after_qpc_100ns =
+            now().filter(|after| self.before_qpc_100ns.is_none_or(|before| *after >= before));
+        match result {
+            Ok(result) => {
+                self.outcome = Some(if result.is_ok() {
+                    CallOutcome::Succeeded
+                } else {
+                    CallOutcome::ReturnedError
+                });
+                result
+            }
+            Err(panic) => {
+                self.outcome = Some(CallOutcome::Panicked);
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub(crate) struct WorkerStopObservation {
+    stop_request_observed: bool,
+    /// Sampled after the worker loads stop_requested; not the broadcast time
+    /// or proof that the flag caused the loop to exit (wait can fail first).
+    stop_request_observed_qpc_100ns: Option<u64>,
+    stream_started: bool,
+    stream_stop: CallWindow,
+}
+
+impl WorkerStopObservation {
+    fn observe_request(&mut self, requested: bool, now: impl FnOnce() -> Option<u64>) -> bool {
+        if requested && !self.stop_request_observed {
+            self.stop_request_observed = true;
+            self.stop_request_observed_qpc_100ns = now();
+        }
+        requested
+    }
+
+    fn stop_stream<T, E>(&mut self, stop: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        if self.stream_started {
+            self.stream_stop.observe(stop)
+        } else {
+            stop()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub(crate) struct MeasurementRetirement {
+    first_stop_broadcast: CallWindow,
+    native_join: CallWindow,
+    worker_joined: Option<bool>,
+    worker: Option<WorkerStopObservation>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MeasurementConfig {
+    pub(crate) input_endpoint_id: String,
+    pub(crate) capture_mode: moiren_engine::node::DeviceMode,
+    pub(crate) request_minimum_period: bool,
+    pub(crate) max_active_duration: Duration,
+    pub(crate) ring_frames: usize,
+    pub(crate) max_pcm_bytes: u64,
+    pub(crate) max_metadata_bytes: u64,
+    pub(crate) max_packets: u64,
+}
+
+pub(crate) struct MeasurementPaths {
+    pub(crate) pcm: PathBuf,
+    pub(crate) packets: PathBuf,
+}
+
+impl MeasurementPaths {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.pcm.as_os_str().is_empty()
+                && !self.packets.as_os_str().is_empty()
+                && self.pcm != self.packets,
+            "measurement output paths must be nonempty and distinct"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MeasurementInfo {
+    pub(crate) input_endpoint_id: String,
+    pub(crate) sample_rate: u32,
+    pub(crate) channels: usize,
+    pub(crate) ring_frames: usize,
+    pub(crate) max_frames: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MeasurementProgress {
+    Prepared,
+    Starting,
+    Running { elapsed: Duration },
+    DeadlineReached,
+    Stopping,
+}
+
+#[derive(Debug)]
+pub(crate) struct MeasurementOutcome {
+    pub(crate) info: MeasurementInfo,
+    pub(crate) native_capture: Option<CaptureReport>,
+    pub(crate) sink: Option<SinkReport>,
+    pub(crate) activation_elapsed: Option<Duration>,
+    pub(crate) failure: Option<String>,
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct MeasurementPreparationFailure {
+    pub(crate) error: anyhow::Error,
+    pub(crate) native_capture: Option<Box<CaptureReport>>,
+    pub(crate) retirement: Option<Box<MeasurementRetirement>>,
+}
+
+#[cfg(windows)]
+impl fmt::Display for MeasurementPreparationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+#[cfg(windows)]
+impl std::error::Error for MeasurementPreparationFailure {}
+
+#[cfg(windows)]
+impl From<anyhow::Error> for MeasurementPreparationFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            native_capture: None,
+            retirement: None,
+        }
+    }
+}
+
+trait NativeOwner: Send {
+    fn activate(&self) -> Result<()>;
+    fn has_started(&self) -> bool;
+    fn is_finished(&self) -> bool;
+    fn request_stop(&self) -> Result<()>;
+    fn join(&mut self) -> Result<CaptureReport>;
+    fn worker_retirement(&self) -> (Option<bool>, Option<WorkerStopObservation>) {
+        (None, None)
+    }
+}
+
+trait SinkOwner: Send {
+    fn check(&self) -> Result<()>;
+    fn cancel(&self);
+    fn finish(&mut self) -> Result<SinkReport>;
+}
+
+pub(crate) struct MeasurementSession {
+    native: Option<Box<dyn NativeOwner>>,
+    native_result: Option<Result<CaptureReport>>,
+    sink: Option<Box<dyn SinkOwner>>,
+    info: MeasurementInfo,
+    config: MeasurementConfig,
+    start_grace: Duration,
+    activated: Option<Instant>,
+    stopping: bool,
+    activation_failed: bool,
+    failures: RefCell<Option<String>>,
+    retirement: MeasurementRetirement,
+}
+
+impl MeasurementConfig {
+    fn capture_device(&self) -> moiren_engine::node::DeviceOptions {
+        moiren_engine::node::DeviceOptions {
+            mode: self.capture_mode,
+            sample_format: moiren_engine::audio_config::SampleFormat::Float32,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.input_endpoint_id.trim().is_empty() && !self.input_endpoint_id.contains('\0'),
+            "--input must be an explicit endpoint ID without NUL"
+        );
+        ensure!(
+            self.max_active_duration.subsec_nanos() == 0
+                && (1..=7200).contains(&self.max_active_duration.as_secs()),
+            "measurement duration must be 1..7200 whole seconds"
+        );
+        ensure!(
+            self.ring_frames > 0
+                && self
+                    .ring_frames
+                    .checked_mul(size_of::<PcmEvidenceFrame>())
+                    .is_some_and(|bytes| bytes <= 8 * 1024 * 1024),
+            "evidence ring exceeds its nonzero 8 MiB storage budget"
+        );
+        ensure!(
+            (1..=3 * 1024 * 1024 * 1024).contains(&self.max_pcm_bytes),
+            "PCM byte cap must be 1..3GiB"
+        );
+        ensure!(
+            (1..=256 * 1024 * 1024).contains(&self.max_metadata_bytes),
+            "metadata byte cap must be 1..256MiB"
+        );
+        ensure!(
+            (1..=1_000_000).contains(&self.max_packets),
+            "packet cap must be 1..1000000"
+        );
+        Ok(())
+    }
+
+    fn negotiated_info(&self, sample_rate: u32, channels: usize) -> Result<MeasurementInfo> {
+        self.validate()?;
+        ensure!(
+            sample_rate > 0 && (1..=2).contains(&channels),
+            "measurement requires negotiated nonzero rate and mono/stereo"
+        );
+        let width = (channels as u64)
+            .checked_mul(4)
+            .context("measurement frame width overflow")?;
+        let max_frames = self.max_pcm_bytes / width;
+        ensure!(
+            max_frames > 0,
+            "PCM byte cap cannot hold one negotiated frame"
+        );
+        Ok(MeasurementInfo {
+            input_endpoint_id: self.input_endpoint_id.clone(),
+            sample_rate,
+            channels,
+            ring_frames: self.ring_frames,
+            max_frames,
+        })
+    }
+}
+
+impl MeasurementSession {
+    #[cfg(windows)]
+    pub(crate) fn prepare(
+        config: MeasurementConfig,
+        paths: MeasurementPaths,
+    ) -> std::result::Result<Self, MeasurementPreparationFailure> {
+        use moiren_windows_audio::{
+            ActivationGate, SessionDuration, StopSignal, capture::PcmEvidenceConfig,
+        };
+        config
+            .validate()
+            .map_err(MeasurementPreparationFailure::from)?;
+        paths
+            .validate()
+            .map_err(MeasurementPreparationFailure::from)?;
+        let stop = StopSignal::new().context("create independent measurement stop")?;
+        let gate =
+            ActivationGate::new(stop.clone()).context("create measurement activation gate")?;
+        let (prepared, reader) = NativeCapture::prepare(
+            &config,
+            gate.clone(),
+            stop.clone(),
+            SessionDuration::UntilStopped,
+            PcmEvidenceConfig {
+                capacity_frames: config.ring_frames,
+                detect_position_gaps: true,
+            },
+        )
+        .map_err(|failure| MeasurementPreparationFailure {
+            error: anyhow::anyhow!("prepare independent native capture: {:#}", failure.error),
+            native_capture: failure.report,
+            retirement: failure.retirement,
+        })?;
+        let info = match config.negotiated_info(prepared.info.sample_rate, prepared.info.channels) {
+            Ok(info) => info,
+            Err(error) => {
+                let (report, cleanup_error, retirement) = prepared.cancel_and_join();
+                return Err(MeasurementPreparationFailure {
+                    error: with_cleanup_error(error, cleanup_error),
+                    native_capture: report.map(Box::new),
+                    retirement: Some(Box::new(retirement)),
+                });
+            }
+        };
+        // Install native ownership before any fallible sink setup. Drop must
+        // stop/join the gated native owner before waiting on a filesystem worker.
+        let mut owner = Self::own_native(config, info, prepared.native);
+        let sink = match EvidenceSink::create(
+            reader,
+            owner.info.sample_rate,
+            owner.info.channels,
+            &paths.pcm,
+            &paths.packets,
+            crate::measurement_sink::SinkLimits {
+                max_frames: owner.info.max_frames,
+                max_pcm_bytes: owner.config.max_pcm_bytes,
+                max_metadata_bytes: owner.config.max_metadata_bytes,
+                max_packets: owner.config.max_packets,
+            },
+        ) {
+            Ok(sink) => sink,
+            Err(error) => {
+                let (report, cleanup_error) = owner.stop_and_join_native();
+                return Err(MeasurementPreparationFailure {
+                    error: with_cleanup_error(
+                        anyhow::anyhow!("prepare bounded non-RT measurement sink: {error:#}"),
+                        cleanup_error,
+                    ),
+                    native_capture: report.map(Box::new),
+                    retirement: Some(Box::new(owner.retirement_observation())),
+                });
+            }
+        };
+        owner.sink = Some(Box::new(sink));
+        Ok(owner)
+    }
+
+    fn own_native(
+        config: MeasurementConfig,
+        info: MeasurementInfo,
+        native: impl NativeOwner + 'static,
+    ) -> Self {
+        Self {
+            native: Some(Box::new(native)),
+            native_result: None,
+            sink: None,
+            config,
+            info,
+            start_grace: Duration::ZERO,
+            activated: None,
+            stopping: false,
+            activation_failed: false,
+            failures: RefCell::new(None),
+            retirement: MeasurementRetirement::default(),
+        }
+    }
+
+    pub(crate) fn info(&self) -> &MeasurementInfo {
+        &self.info
+    }
+
+    pub(crate) fn retirement_observation(&self) -> MeasurementRetirement {
+        self.retirement
+    }
+
+    /// Extend only the initial Start acknowledgement, never the activation
+    /// anchor or total active duration. Configure before handing off activation.
+    pub(crate) fn with_start_grace(mut self, grace: Duration) -> Result<Self> {
+        ensure!(
+            grace <= Duration::from_secs(3),
+            "measurement Start grace must be 0..3 seconds"
+        );
+        ensure!(
+            self.activated.is_none() && !self.stopping && !self.activation_failed,
+            "measurement Start grace must be set before activation or stop"
+        );
+        self.start_grace = grace;
+        Ok(self)
+    }
+
+    #[cfg(windows)]
+    fn stop_and_join_native(&mut self) -> (Option<CaptureReport>, Option<anyhow::Error>) {
+        let Some(mut native) = self.native.take() else {
+            return (
+                None,
+                Some(anyhow::anyhow!("measurement native owner missing")),
+            );
+        };
+        let stop_error = self
+            .retirement
+            .first_stop_broadcast
+            .observe(|| native.request_stop())
+            .err();
+        let result = self
+            .retirement
+            .native_join
+            .observe(|| join_native(native.as_mut()));
+        (self.retirement.worker_joined, self.retirement.worker) = native.worker_retirement();
+        drop(native);
+        match result {
+            Ok(report) => (Some(report), stop_error),
+            Err(error) => (None, Some(error)),
+        }
+    }
+
+    pub(crate) fn activate(&mut self) -> Result<()> {
+        ensure!(
+            self.activated.is_none() && !self.stopping,
+            "measurement activation already attempted or stopping"
+        );
+        self.check()?;
+        self.activated = Some(Instant::now());
+        let result = self
+            .native
+            .as_ref()
+            .context("measurement native owner missing")?
+            .activate();
+        if let Err(error) = &result {
+            self.activation_failed = true;
+            append_failure(
+                &mut self.failures.borrow_mut(),
+                &format!("activate independent measurement: {error:#}"),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn check(&self) -> Result<MeasurementProgress> {
+        self.check_elapsed(self.activated.map(|instant| instant.elapsed()))
+    }
+
+    fn check_elapsed(&self, elapsed: Option<Duration>) -> Result<MeasurementProgress> {
+        let result = (|| {
+            let native = self
+                .native
+                .as_ref()
+                .context("measurement native owner missing or finished")?;
+            let sink = self
+                .sink
+                .as_ref()
+                .context("measurement sink owner missing or finished")?;
+            if self.stopping {
+                return Ok(MeasurementProgress::Stopping);
+            }
+            ensure!(!self.activation_failed, "measurement activation failed");
+            ensure!(
+                !native.is_finished(),
+                "measurement owner stopped before deadline"
+            );
+            sink.check()?;
+            let Some(elapsed) = elapsed else {
+                return Ok(MeasurementProgress::Prepared);
+            };
+            if !native.has_started() {
+                ensure!(
+                    elapsed < START_TIMEOUT.saturating_add(self.start_grace),
+                    "measurement native Start acknowledgement exceeded {:?}",
+                    START_TIMEOUT.saturating_add(self.start_grace)
+                );
+                ensure!(
+                    elapsed < self.config.max_active_duration,
+                    "measurement deadline reached without native Start"
+                );
+                return Ok(MeasurementProgress::Starting);
+            }
+            if elapsed >= self.config.max_active_duration {
+                return Ok(MeasurementProgress::DeadlineReached);
+            }
+            Ok(MeasurementProgress::Running { elapsed })
+        })();
+        if let Err(error) = &result {
+            append_failure(
+                &mut self.failures.borrow_mut(),
+                &format!("measurement health: {error:#}"),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn request_stop(&mut self) -> Result<()> {
+        let native = self
+            .native
+            .as_ref()
+            .context("measurement native owner missing or finished")?;
+        self.stopping = true;
+        // Keep the original broadcast even on repeated cleanup attempts, but
+        // never replace the first request window with finish()'s later repeat.
+        let result = if self.retirement.first_stop_broadcast.attempted {
+            native.request_stop()
+        } else {
+            self.retirement
+                .first_stop_broadcast
+                .observe(|| native.request_stop())
+        };
+        if let Err(error) = &result {
+            append_failure(
+                &mut self.failures.borrow_mut(),
+                &format!("stop independent measurement: {error:#}"),
+            );
+        }
+        result
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<MeasurementOutcome> {
+        ensure!(
+            (self.native.is_some() || self.native_result.is_some()) && self.sink.is_some(),
+            "measurement owner missing or already finished"
+        );
+        // No fallible result below may bypass either join. Native EOF must be
+        // final before the sink drains, even when native quality already failed.
+        if self.native.is_some() {
+            let _ = self.request_stop();
+            self.join_native_owner();
+        }
+        let native_result = self.native_result.take().expect("native result retained");
+        let mut sink = self.sink.take().expect("owner checked above");
+        let sink_result = join_sink(sink.as_mut());
+        drop(sink);
+        let mut outcome = MeasurementOutcome {
+            info: self.info.clone(),
+            native_capture: None,
+            sink: None,
+            activation_elapsed: self.activated.map(|instant| instant.elapsed()),
+            failure: self.failures.take(),
+        };
+        match native_result {
+            Ok(report) => outcome.native_capture = Some(report),
+            Err(error) => append_failure(
+                &mut outcome.failure,
+                &format!("join measurement owner: {error:#}"),
+            ),
+        }
+        match sink_result {
+            Ok(report) => outcome.sink = Some(report),
+            Err(error) => append_failure(
+                &mut outcome.failure,
+                &format!("join measurement sink: {error:#}"),
+            ),
+        }
+        validate_outcome(&mut outcome);
+        Ok(outcome)
+    }
+
+    /// Wait only for native Stop/release, never the filesystem sink. Keep the
+    /// owner on timeout: later cleanup still closes gates, stops the host and
+    /// performs the existing final joins. Those joins are not deadline-bounded.
+    pub(crate) fn complete_native(&mut self) -> Result<()> {
+        let started = Instant::now();
+        self.complete_native_with(|| {
+            let remaining = NATIVE_COMPLETION_TIMEOUT.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return false;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+            true
+        })
+    }
+
+    fn complete_native_with(&mut self, mut wait: impl FnMut() -> bool) -> Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ensure!(
+                self.stopping,
+                "native completion requires a stop broadcast attempt"
+            );
+            if self.native_result.is_none() {
+                let native = self
+                    .native
+                    .as_ref()
+                    .context("measurement native owner missing")?;
+                while !native.is_finished() {
+                    ensure!(
+                        wait(),
+                        "native Stop/release completion exceeded {NATIVE_COMPLETION_TIMEOUT:?}"
+                    );
+                }
+                // JoinHandle::is_finished covers thread return, including Stop
+                // and release. A successful join alone does not mean Stop passed.
+                self.join_native_owner();
+            }
+            let report = self
+                .native_result
+                .as_ref()
+                .expect("native result retained")
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+            ensure!(
+                report.failure.is_none(),
+                "native completion: {}",
+                report.failure.as_deref().unwrap_or_default()
+            );
+            ensure!(
+                !report.stream_started || report.stop_succeeded,
+                "native Stop did not succeed"
+            );
+            Ok(())
+        }))
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("native completion panicked")));
+        if let Err(error) = &result {
+            append_failure(
+                &mut self.failures.borrow_mut(),
+                &format!("complete measurement native: {error:#}"),
+            );
+        }
+        result
+    }
+
+    fn join_native_owner(&mut self) {
+        let mut native = self.native.take().expect("native owner checked");
+        self.native_result = Some(
+            self.retirement
+                .native_join
+                .observe(|| join_native(native.as_mut())),
+        );
+        (self.retirement.worker_joined, self.retirement.worker) = native.worker_retirement();
+        drop(native);
+    }
+}
+
+impl Drop for MeasurementSession {
+    fn drop(&mut self) {
+        if let Some(mut native) = self.native.take() {
+            let _ = native.request_stop();
+            let _ = join_native(native.as_mut());
+            drop(native);
+        }
+        if let Some(mut sink) = self.sink.take() {
+            sink.cancel();
+            let _ = join_sink(sink.as_mut());
+        }
+    }
+}
+
+fn join_native(owner: &mut dyn NativeOwner) -> Result<CaptureReport> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.join()))
+        .map_err(|_| anyhow::anyhow!("measurement native join panicked"))?
+}
+
+fn join_sink(owner: &mut dyn SinkOwner) -> Result<SinkReport> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.finish()))
+        .map_err(|_| anyhow::anyhow!("measurement sink join panicked"))?
+}
+
+impl SinkOwner for EvidenceSink {
+    fn check(&self) -> Result<()> {
+        EvidenceSink::check(self)
+    }
+    fn cancel(&self) {
+        EvidenceSink::cancel(self);
+    }
+    fn finish(&mut self) -> Result<SinkReport> {
+        EvidenceSink::finish(self)
+    }
+}
+
+#[cfg(windows)]
+struct NativeCapture {
+    worker: Option<std::thread::JoinHandle<NativeCaptureExit>>,
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    gate: moiren_windows_audio::ActivationGate,
+    stop: moiren_windows_audio::StopSignal,
+    stop_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    joined: Option<bool>,
+    retirement: Option<WorkerStopObservation>,
+}
+
+#[cfg(windows)]
+struct NativeCaptureExit {
+    report: CaptureReport,
+    writer: Option<moiren_windows_audio::capture::PcmEvidenceWriter>,
+    retirement: WorkerStopObservation,
+}
+
+#[cfg(windows)]
+impl NativeCaptureExit {
+    fn into_report(self) -> CaptureReport {
+        let mut report = self.report;
+        if let Some(writer) = self.writer {
+            let summary = writer.snapshot();
+            report.packets = summary.packets;
+            report.evidence_metadata = Some(summary);
+            drop(writer);
+        }
+        report
+    }
+}
+
+#[cfg(windows)]
+struct PreparedNativeCapture {
+    native: NativeCapture,
+    info: moiren_windows_audio::native::NativeStreamInfo,
+}
+
+#[cfg(windows)]
+struct NativeCapturePreparationFailure {
+    error: anyhow::Error,
+    report: Option<Box<CaptureReport>>,
+    retirement: Option<Box<MeasurementRetirement>>,
+}
+
+#[cfg(windows)]
+impl PreparedNativeCapture {
+    fn cancel_and_join(
+        mut self,
+    ) -> (
+        Option<CaptureReport>,
+        Option<anyhow::Error>,
+        MeasurementRetirement,
+    ) {
+        let mut retirement = MeasurementRetirement::default();
+        let stop_error = retirement
+            .first_stop_broadcast
+            .observe(|| self.native.request_stop())
+            .err();
+        let joined = retirement.native_join.observe(|| self.native.join());
+        (retirement.worker_joined, retirement.worker) = self.native.worker_retirement();
+        let cleanup = stop_error.or_else(|| {
+            joined
+                .as_ref()
+                .err()
+                .map(|error| anyhow::anyhow!("{error:#}"))
+        });
+        (joined.ok(), cleanup, retirement)
+    }
+}
+
+#[cfg(windows)]
+impl NativeCapture {
+    fn prepare(
+        config: &MeasurementConfig,
+        gate: moiren_windows_audio::ActivationGate,
+        stop: moiren_windows_audio::StopSignal,
+        duration: moiren_windows_audio::SessionDuration,
+        evidence_config: moiren_windows_audio::capture::PcmEvidenceConfig,
+    ) -> std::result::Result<
+        (
+            PreparedNativeCapture,
+            moiren_windows_audio::capture::PcmEvidenceReader,
+        ),
+        NativeCapturePreparationFailure,
+    > {
+        use std::sync::{atomic::AtomicBool, mpsc};
+
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let started = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_started = started.clone();
+        let stop_requested = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_stop_requested = stop_requested.clone();
+        let request = NativeCaptureRequest {
+            endpoint_id: config.input_endpoint_id.clone(),
+            device: config.capture_device(),
+            request_minimum_period: config.request_minimum_period,
+        };
+        let worker_gate = gate.clone();
+        let worker = std::thread::Builder::new()
+            .name("e2e-measurement-capture".into())
+            .spawn(move || {
+                capture_owner(
+                    request,
+                    duration,
+                    worker_gate,
+                    worker_started,
+                    worker_stop_requested,
+                    evidence_config,
+                    ready_tx,
+                )
+            })
+            .map_err(|error| NativeCapturePreparationFailure {
+                error: anyhow::anyhow!("spawn native measurement owner: {error}"),
+                report: None,
+                retirement: None,
+            })?;
+        let startup = match ready_rx.recv() {
+            Ok(Ok(startup)) => startup,
+            Ok(Err(error)) => {
+                let mut retirement = MeasurementRetirement::default();
+                let _ = retirement
+                    .first_stop_broadcast
+                    .observe(|| stop.request_stop());
+                let joined = retirement.native_join.observe(|| worker.join());
+                retirement.worker_joined = Some(true);
+                let exit = joined.ok().map(|exit| {
+                    retirement.worker = Some(exit.retirement);
+                    exit.into_report()
+                });
+                return Err(NativeCapturePreparationFailure {
+                    error: anyhow::anyhow!(error),
+                    report: exit.map(Box::new),
+                    retirement: Some(Box::new(retirement)),
+                });
+            }
+            Err(_) => {
+                let mut retirement = MeasurementRetirement::default();
+                let _ = retirement
+                    .first_stop_broadcast
+                    .observe(|| stop.request_stop());
+                let joined = retirement.native_join.observe(|| worker.join());
+                retirement.worker_joined = Some(true);
+                let exit = joined.ok().map(|exit| {
+                    retirement.worker = Some(exit.retirement);
+                    exit.into_report()
+                });
+                return Err(NativeCapturePreparationFailure {
+                    error: anyhow::anyhow!("native measurement owner lost during preparation"),
+                    report: exit.map(Box::new),
+                    retirement: Some(Box::new(retirement)),
+                });
+            }
+        };
+        let native = NativeCapture {
+            worker: Some(worker),
+            started,
+            gate,
+            stop,
+            stop_requested,
+            joined: None,
+            retirement: None,
+        };
+        Ok((
+            PreparedNativeCapture {
+                native,
+                info: startup.info,
+            },
+            startup.reader,
+        ))
+    }
+}
+
+#[cfg(windows)]
+struct CaptureStartup {
+    info: moiren_windows_audio::native::NativeStreamInfo,
+    reader: moiren_windows_audio::capture::PcmEvidenceReader,
+}
+
+#[cfg(windows)]
+struct NativeCaptureRequest {
+    endpoint_id: String,
+    device: moiren_engine::node::DeviceOptions,
+    request_minimum_period: bool,
+}
+
+#[cfg(windows)]
+fn capture_owner(
+    request: NativeCaptureRequest,
+    duration: moiren_windows_audio::SessionDuration,
+    gate: moiren_windows_audio::ActivationGate,
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    evidence_config: moiren_windows_audio::capture::PcmEvidenceConfig,
+    ready: std::sync::mpsc::SyncSender<std::result::Result<CaptureStartup, String>>,
+) -> NativeCaptureExit {
+    use moiren_engine::audio_config::SampleFormat;
+    use moiren_windows_audio::{
+        Activation,
+        capture::{CaptureReport, CaptureSource, CaptureStatus, pcm_evidence_stream},
+        native::NativeStream,
+        wasapi::{WasapiOptions, WasapiStream},
+    };
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        time::Instant,
+    };
+
+    let mut report = CaptureReport::new(CaptureSource::Physical, duration);
+    report.endpoint_id = Some(request.endpoint_id.clone());
+    let period_evidence = request.request_minimum_period.then(|| {
+        std::sync::Arc::new(std::sync::Mutex::new(
+            moiren_windows_audio::native::ExclusivePeriodEvidence {
+                qualification: "unqualified-request-only",
+                requested_minimum: true,
+                default_hns: None,
+                minimum_hns: None,
+                query_hresult: None,
+                initial_request_hns: None,
+                final_request_hns: None,
+                alignment_retry: false,
+                alignment_query_hresult: None,
+                aligned_buffer_frames: None,
+                first_initialize_hresult: None,
+                retry_initialize_hresult: None,
+                actual_buffer_frames: None,
+                actual_buffer_hresult: None,
+            },
+        ))
+    });
+    let mut stream: Option<WasapiStream> = None;
+    let mut writer = None;
+    let mut retirement = WorkerStopObservation::default();
+    let mut ready = Some(ready);
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<CaptureStatus> {
+        let opened = WasapiStream::open(WasapiOptions {
+            endpoint_id: request.endpoint_id,
+            sample_rate: 48_000,
+            device: request.device,
+            input: true,
+            exclusive_period_evidence: period_evidence.clone(),
+        });
+        let mut opened = match opened {
+            Ok(stream) => stream,
+            Err(error) => {
+                report.exclusive_period = period_evidence.as_ref().map(|handle| {
+                    handle
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .to_owned()
+                });
+                return Err(anyhow::anyhow!(error));
+            }
+        };
+        report.exclusive_period = opened.exclusive_period();
+        let info = opened.info();
+        report.sample_rate = Some(info.sample_rate);
+        report.channels = Some(info.channels);
+        report.buffer_frames = Some(info.buffer_frames);
+        report.shared_period = opened.shared_period().unwrap_or_default();
+        ensure!(
+            info.format == SampleFormat::Float32 && (1..=2).contains(&info.channels),
+            "independent measurement requires negotiated Float32 mono/stereo"
+        );
+        let (evidence, reader) =
+            pcm_evidence_stream(evidence_config, info.sample_rate, info.channels)?;
+        match opened.attach_capture_evidence(evidence) {
+            Ok(()) => {}
+            Err(error) => {
+                let (error, returned) = *error;
+                writer = Some(returned);
+                return Err(anyhow::anyhow!("attach native PCM evidence tap: {error}"));
+            }
+        }
+        stream = Some(opened);
+        let mut output = vec![[0.0; 2]; info.buffer_frames as usize];
+        ready
+            .take()
+            .expect("startup sender")
+            .send(Ok(CaptureStartup { info, reader }))
+            .map_err(|_| anyhow::anyhow!("measurement preparation receiver was lost"))?;
+        if gate.wait()? == Activation::Cancelled {
+            return Ok(CaptureStatus::Stopped);
+        }
+        let stream = stream.as_mut().expect("opened capture stream");
+        stream.start()?;
+        started.store(true, std::sync::atomic::Ordering::Release);
+        report.stream_started = true;
+        retirement.stream_started = true;
+        let beginning = Instant::now();
+        loop {
+            report.elapsed_seconds = beginning.elapsed().as_secs_f64();
+            if retirement.observe_request(
+                stop_requested.load(std::sync::atomic::Ordering::Acquire),
+                || moiren_windows_audio::latency::QpcClock::new().and_then(|clock| clock.now()),
+            ) {
+                break;
+            }
+            if duration.remaining(beginning.elapsed()) == Some(Duration::ZERO) {
+                break;
+            }
+            let timeout = duration
+                .remaining(beginning.elapsed())
+                .unwrap_or(Duration::from_millis(20))
+                .min(Duration::from_millis(20));
+            if !stream.wait(timeout)? {
+                report.timeout_wakes += 1;
+                continue;
+            }
+            report.audio_wakes += 1;
+            loop {
+                let frames = stream.read(&mut output)?;
+                if frames == 0 {
+                    break;
+                }
+            }
+        }
+        report.elapsed_seconds = beginning.elapsed().as_secs_f64();
+        Ok(
+            if duration.remaining(beginning.elapsed()) == Some(Duration::ZERO) {
+                CaptureStatus::Completed
+            } else {
+                CaptureStatus::Stopped
+            },
+        )
+    }));
+    match result {
+        Ok(Ok(status)) => report.status = status,
+        Ok(Err(error)) => report.failure = Some(format!("{error:#}")),
+        Err(_) => report.failure = Some("native measurement owner panicked".into()),
+    }
+    // StopSignal can interrupt wait before the next loop-boundary load.
+    // Observe here without claiming that the loop took its stop branch.
+    retirement.observe_request(
+        stop_requested.load(std::sync::atomic::Ordering::Acquire),
+        || moiren_windows_audio::latency::QpcClock::new().and_then(|clock| clock.now()),
+    );
+    if let Some(stream) = &mut stream {
+        // WasapiStream::stop only invokes IAudioClient::Stop after a successful
+        // Start. Preserve its existing pre-Start no-op without claiming a call.
+        let stopped = retirement.stop_stream(|| stream.stop());
+        match stopped {
+            Ok(()) => report.stop_succeeded = true,
+            Err(error) => {
+                report.failure = Some(append_message(
+                    report.failure.take(),
+                    &format!("Stop capture: {error}"),
+                ));
+            }
+        }
+        // Evidence lifetime and reclamation remain separate from native IO:
+        // take only after Stop, then snapshot/drop it on the joining thread.
+        writer = stream.take_capture_evidence().or(writer);
+        let stats = stream.stats();
+        report.audio_wakes = stats.wait_wakes;
+        report.timeout_wakes = stats.wait_timeouts;
+        if let Err(error) = stream.release() {
+            report.failure = Some(append_message(
+                report.failure.take(),
+                &format!("release capture: {error}"),
+            ));
+        }
+    }
+    if let Some(ready) = ready {
+        let _ = ready
+            .send(Err(report.failure.clone().unwrap_or_else(|| {
+                "measurement capture preparation stopped".into()
+            })));
+    }
+    NativeCaptureExit {
+        report,
+        writer,
+        retirement,
+    }
+}
+
+#[cfg(windows)]
+fn append_message(previous: Option<String>, message: &str) -> String {
+    previous.map_or_else(
+        || message.to_owned(),
+        |previous| format!("{previous}; {message}"),
+    )
+}
+
+#[cfg(windows)]
+impl NativeOwner for NativeCapture {
+    fn activate(&self) -> Result<()> {
+        self.gate
+            .activate()
+            .context("activate independent measurement")
+    }
+    fn has_started(&self) -> bool {
+        self.started.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn is_finished(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+    fn request_stop(&self) -> Result<()> {
+        self.stop_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.stop
+            .request_stop()
+            .context("stop independent measurement owner")
+    }
+    fn join(&mut self) -> Result<CaptureReport> {
+        let worker = self
+            .worker
+            .take()
+            .context("measurement native owner missing")?;
+        match worker.join() {
+            Ok(exit) => {
+                self.joined = Some(true);
+                self.retirement = Some(exit.retirement);
+                Ok(exit.into_report())
+            }
+            Err(_) => {
+                // join returned after termination even when the worker panicked;
+                // the failed native_join outcome is separate from liveness.
+                self.joined = Some(true);
+                Err(anyhow::anyhow!(
+                    "measurement native owner panicked outside cleanup"
+                ))
+            }
+        }
+    }
+    fn worker_retirement(&self) -> (Option<bool>, Option<WorkerStopObservation>) {
+        (self.joined, self.retirement)
+    }
+}
+
+fn validate_outcome(outcome: &mut MeasurementOutcome) {
+    if outcome.activation_elapsed.is_none() {
+        append_failure(&mut outcome.failure, "measurement was never activated");
+    }
+    if let Some(native) = &outcome.native_capture {
+        reconcile(
+            native.stream_started,
+            native.stop_succeeded,
+            native.failure.as_deref(),
+            native.evidence_metadata,
+            outcome.sink.as_ref(),
+            &outcome.info,
+            &mut outcome.failure,
+        );
+    } else if let Some(sink) = &outcome.sink {
+        validate_sink(sink, None, &outcome.info, &mut outcome.failure);
+    }
+}
+
+fn reconcile(
+    started: bool,
+    stopped: bool,
+    native_failure: Option<&str>,
+    summary: Option<moiren_windows_audio::capture::PcmEvidenceSummary>,
+    sink: Option<&SinkReport>,
+    info: &MeasurementInfo,
+    failure: &mut Option<String>,
+) {
+    if let Some(native_failure) = native_failure {
+        append_failure(failure, native_failure);
+    }
+    if !started || !stopped {
+        append_failure(
+            failure,
+            "measurement native stream did not start and stop cleanly",
+        );
+    }
+    match summary {
+        Some(summary) => {
+            if summary.dropped_frames != 0
+                || summary.overflow_packets != 0
+                || summary.reader_abandoned_packets != 0
+                || summary.gap_events != 0
+                || summary.discontinuity_events != 0
+                || summary.timestamp_error_packets != 0
+                || summary.position_overflow_packets != 0
+                || summary.counters_saturated
+                || summary.sequence_exhausted
+            {
+                append_failure(
+                    failure,
+                    "measurement evidence has loss or invalid continuity/timestamps",
+                );
+            }
+        }
+        None => append_failure(failure, "measurement evidence summary is missing"),
+    }
+    if let Some(sink) = sink {
+        validate_sink(sink, summary, info, failure);
+    }
+}
+
+fn validate_sink(
+    sink: &SinkReport,
+    summary: Option<moiren_windows_audio::capture::PcmEvidenceSummary>,
+    info: &MeasurementInfo,
+    failure: &mut Option<String>,
+) {
+    if let Some(sink_failure) = &sink.failure {
+        append_failure(failure, sink_failure);
+    }
+    if sink.nonfinite_samples != 0
+        || sink.missing_packets != 0
+        || sink.incomplete_packets != 0
+        || sink.counters_saturated
+        || sink.cancelled
+        || sink.sample_rate != info.sample_rate
+        || sink.channels != info.channels
+        || summary.is_some_and(|summary| {
+            summary.stored_frames == 0
+                || sink.written_frames != summary.stored_frames
+                || sink.complete_packets != summary.packets
+        })
+    {
+        append_failure(
+            failure,
+            "measurement sink and final native evidence are not complete and consistent",
+        );
+    }
+}
+
+fn append_failure(failure: &mut Option<String>, message: &str) {
+    let text = failure.get_or_insert_with(String::new);
+    if text.contains(message) || text.len() >= MAX_FAILURE_BYTES {
+        return;
+    }
+    let separator = if text.is_empty() { "" } else { "; " };
+    let available = MAX_FAILURE_BYTES.saturating_sub(text.len() + separator.len());
+    let mut end = message.len().min(available);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == 0 {
+        return;
+    }
+    text.push_str(separator);
+    text.push_str(&message[..end]);
+}
+
+#[cfg(windows)]
+fn with_cleanup_error(error: anyhow::Error, cleanup_error: Option<anyhow::Error>) -> anyhow::Error {
+    match cleanup_error {
+        Some(cleanup_error) => {
+            anyhow::anyhow!("{error:#}; native cleanup failed: {cleanup_error:#}")
+        }
+        None => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[derive(Default)]
+    struct State {
+        started: AtomicBool,
+        native_finished: AtomicBool,
+        sink_finished: AtomicBool,
+        activation_failure: AtomicBool,
+        stop_failure: AtomicBool,
+        native_join_failure: AtomicBool,
+        sink_join_failure: AtomicBool,
+        log: Mutex<Vec<&'static str>>,
+    }
+
+    struct FakeNative {
+        state: Arc<State>,
+        report: Option<CaptureReport>,
+    }
+
+    impl NativeOwner for FakeNative {
+        fn activate(&self) -> Result<()> {
+            self.state.log.lock().unwrap().push("activate");
+            anyhow::ensure!(
+                !self.state.activation_failure.load(Ordering::Relaxed),
+                "injected activation failure"
+            );
+            Ok(())
+        }
+        fn has_started(&self) -> bool {
+            self.state.started.load(Ordering::Relaxed)
+        }
+        fn is_finished(&self) -> bool {
+            self.state.native_finished.load(Ordering::Relaxed)
+        }
+        fn request_stop(&self) -> Result<()> {
+            self.state.log.lock().unwrap().push("native_stop");
+            anyhow::ensure!(
+                !self.state.stop_failure.load(Ordering::Relaxed),
+                "injected stop failure"
+            );
+            Ok(())
+        }
+        fn join(&mut self) -> Result<CaptureReport> {
+            self.state.log.lock().unwrap().push("native_join");
+            anyhow::ensure!(
+                !self.state.native_join_failure.load(Ordering::Relaxed),
+                "injected native worker panicked"
+            );
+            self.report
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("missing fake report"))
+        }
+    }
+
+    struct FakeSink(Arc<State>);
+
+    impl SinkOwner for FakeSink {
+        fn check(&self) -> Result<()> {
+            anyhow::ensure!(
+                !self.0.sink_finished.load(Ordering::Relaxed),
+                "injected sink stopped"
+            );
+            Ok(())
+        }
+        fn cancel(&self) {
+            self.0.log.lock().unwrap().push("sink_cancel");
+        }
+        fn finish(&mut self) -> Result<SinkReport> {
+            self.0.log.lock().unwrap().push("sink_join");
+            anyhow::ensure!(
+                !self.0.sink_join_failure.load(Ordering::Relaxed),
+                "injected sink worker panicked"
+            );
+            Ok(sink_report())
+        }
+    }
+
+    fn config() -> MeasurementConfig {
+        MeasurementConfig {
+            input_endpoint_id: "independent-endpoint".into(),
+            capture_mode: Default::default(),
+            request_minimum_period: false,
+            max_active_duration: Duration::from_secs(10),
+            ring_frames: 8,
+            max_pcm_bytes: 1024,
+            max_metadata_bytes: 4096,
+            max_packets: 10,
+        }
+    }
+
+    #[test]
+    fn capture_request_preserves_explicit_mode_and_float32_without_period_fallback() {
+        use moiren_engine::{audio_config::SampleFormat, node::DeviceMode};
+        let mut request = config();
+        assert_eq!(request.capture_device().mode, DeviceMode::Shared);
+        assert!(!request.request_minimum_period);
+        request.capture_mode = DeviceMode::Exclusive;
+        for minimum in [false, true] {
+            request.request_minimum_period = minimum;
+            let prepared = request.clone();
+            assert_eq!(prepared.request_minimum_period, minimum);
+            let device = prepared.capture_device();
+            assert_eq!(device.mode, DeviceMode::Exclusive);
+            assert_eq!(device.sample_format, SampleFormat::Float32);
+            // The opt-in remains separate from explicit frame presets; native
+            // preparation must query the device rather than invent a period.
+            assert_eq!(device.period_frames, None);
+        }
+    }
+
+    fn info() -> MeasurementInfo {
+        MeasurementInfo {
+            input_endpoint_id: "independent-endpoint".into(),
+            sample_rate: 44_100,
+            channels: 1,
+            ring_frames: 8,
+            max_frames: 256,
+        }
+    }
+
+    fn sink_report() -> SinkReport {
+        SinkReport {
+            schema_version: 1,
+            sample_rate: 44_100,
+            channels: 1,
+            written_frames: 2,
+            written_pcm_bytes: 8,
+            written_metadata_bytes: 180,
+            complete_packets: 1,
+            sequence_gaps: 0,
+            missing_packets: 0,
+            incomplete_packets: 0,
+            nonfinite_samples: 0,
+            counters_saturated: false,
+            cancelled: false,
+            failure: None,
+        }
+    }
+
+    fn session() -> (MeasurementSession, Arc<State>) {
+        let state = Arc::new(State::default());
+        let mut session = MeasurementSession::own_native(
+            config(),
+            info(),
+            FakeNative {
+                state: state.clone(),
+                report: None,
+            },
+        );
+        session.sink = Some(Box::new(FakeSink(state.clone())));
+        (session, state)
+    }
+
+    #[test]
+    fn native_completion_timeout_retains_owner_and_finishes_every_join() {
+        let (mut owner, state) = session();
+        // Before activation is still a real native owner, not no-owner success.
+        assert!(owner.complete_native().is_err());
+        owner.request_stop().unwrap();
+        let mut waits = 0;
+        let error = owner
+            .complete_native_with(|| {
+                waits += 1;
+                waits < 3
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeded 3s"));
+        assert_eq!(waits, 3);
+        assert!(owner.native.is_some());
+        assert!(owner.native_result.is_none());
+        assert!(!owner.retirement.native_join.attempted);
+        assert_eq!(&*state.log.lock().unwrap(), &["native_stop"]);
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.failure.unwrap().contains("exceeded 3s"));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn native_completion_wait_panic_retains_owner_and_sink_for_final_cleanup() {
+        let (mut owner, state) = session();
+        state.stop_failure.store(true, Ordering::Relaxed);
+        assert!(owner.request_stop().is_err());
+        let error = owner
+            .complete_native_with(|| panic!("injected wait panic"))
+            .unwrap_err();
+        assert!(error.to_string().contains("native completion panicked"));
+        assert!(owner.native.is_some() && owner.sink.is_some());
+        assert!(!owner.retirement.native_join.attempted);
+        let outcome = owner.finish().unwrap();
+        let failure = outcome.failure.unwrap();
+        assert!(failure.contains("stop failure") && failure.contains("native completion panicked"));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn native_completion_joins_once_without_touching_sink_and_retains_join_failure() {
+        for before_start in [false, true] {
+            let (mut owner, state) = session();
+            if !before_start {
+                owner.activate().unwrap();
+            }
+            owner.request_stop().unwrap();
+            let error = owner
+                .complete_native_with(|| {
+                    // A service turn can progress until native Stop/release
+                    // returns; neither the sink nor native join runs meanwhile.
+                    assert!(!state.log.lock().unwrap().contains(&"native_join"));
+                    state.native_finished.store(true, Ordering::Relaxed);
+                    true
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("missing fake report"));
+            assert!(owner.native.is_none());
+            assert!(owner.sink.is_some());
+            assert!(!state.log.lock().unwrap().contains(&"sink_join"));
+            let outcome = owner.finish().unwrap();
+            assert!(outcome.failure.unwrap().contains("missing fake report"));
+            let log = state.log.lock().unwrap();
+            assert_eq!(
+                log.iter().filter(|event| **event == "native_join").count(),
+                1
+            );
+            assert_eq!(log.iter().filter(|event| **event == "sink_join").count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_completion_preserves_stop_release_failures_and_partial_report() {
+        use moiren_windows_audio::{SessionDuration, capture::CaptureSource};
+        for fault in 0..4 {
+            let state = Arc::new(State::default());
+            state.native_finished.store(true, Ordering::Relaxed);
+            let mut report =
+                CaptureReport::new(CaptureSource::Physical, SessionDuration::UntilStopped);
+            report.stream_started = fault != 3;
+            report.stop_succeeded = fault == 0;
+            report.failure = (fault == 2).then(|| "injected release failure".into());
+            let mut owner = MeasurementSession::own_native(
+                config(),
+                info(),
+                FakeNative {
+                    state: state.clone(),
+                    report: Some(report),
+                },
+            );
+            owner.sink = Some(Box::new(FakeSink(state.clone())));
+            owner.request_stop().unwrap();
+            // Already finished means no wait, including pre-Start cancellation.
+            let result = owner.complete_native_with(|| panic!("already finished"));
+            assert_eq!(result.is_ok(), matches!(fault, 0 | 3));
+            // The control entry point must also be idempotent after completion.
+            assert_eq!(owner.complete_native().is_ok(), result.is_ok());
+            let outcome = owner.finish().unwrap();
+            let report = outcome
+                .native_capture
+                .expect("partial native result retained");
+            assert_eq!(report.stream_started, fault != 3);
+            assert_eq!(report.stop_succeeded, fault == 0);
+            if fault == 2 {
+                assert!(outcome.failure.unwrap().contains("release failure"));
+            }
+            assert_eq!(
+                &*state.log.lock().unwrap(),
+                &["native_stop", "native_join", "sink_join"]
+            );
+        }
+    }
+
+    #[test]
+    fn native_completion_join_panic_is_retained_before_sink_finish() {
+        struct PanickingJoin;
+        impl NativeOwner for PanickingJoin {
+            fn activate(&self) -> Result<()> {
+                Ok(())
+            }
+            fn has_started(&self) -> bool {
+                true
+            }
+            fn is_finished(&self) -> bool {
+                true
+            }
+            fn request_stop(&self) -> Result<()> {
+                Ok(())
+            }
+            fn join(&mut self) -> Result<CaptureReport> {
+                panic!("injected native join panic")
+            }
+        }
+        let state = Arc::new(State::default());
+        let mut owner = MeasurementSession::own_native(config(), info(), PanickingJoin);
+        owner.sink = Some(Box::new(FakeSink(state.clone())));
+        owner.request_stop().unwrap();
+        assert!(
+            owner
+                .complete_native_with(|| panic!("already complete"))
+                .unwrap_err()
+                .to_string()
+                .contains("native join panicked")
+        );
+        assert!(owner.native.is_none() && owner.native_result.is_some());
+        assert!(state.log.lock().unwrap().is_empty());
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.failure.unwrap().contains("native join panicked"));
+        assert!(outcome.sink.is_some());
+        assert_eq!(&*state.log.lock().unwrap(), &["sink_join"]);
+    }
+
+    #[test]
+    fn retirement_receipt_distinguishes_first_broadcast_from_join_and_unknown_worker() {
+        let (mut owner, state) = session();
+        let initial = serde_json::to_value(owner.retirement_observation()).unwrap();
+        assert_eq!(initial["first_stop_broadcast"]["attempted"], false);
+        assert!(initial["first_stop_broadcast"]["outcome"].is_null());
+        assert!(initial["worker_joined"].is_null());
+        owner.request_stop().unwrap();
+        let first = serde_json::to_value(owner.retirement_observation()).unwrap();
+        assert_eq!(first["first_stop_broadcast"]["attempted"], true);
+        assert_eq!(first["first_stop_broadcast"]["outcome"], "succeeded");
+        assert_eq!(first["native_join"]["attempted"], false);
+        owner.request_stop().unwrap();
+        assert_eq!(
+            serde_json::to_value(owner.retirement_observation()).unwrap(),
+            first
+        );
+        let _ = owner.finish().unwrap();
+        let final_value = serde_json::to_value(owner.retirement_observation()).unwrap();
+        assert_eq!(
+            final_value["first_stop_broadcast"],
+            first["first_stop_broadcast"]
+        );
+        assert_eq!(final_value["native_join"]["attempted"], true);
+        assert!(final_value["worker_joined"].is_null());
+        assert!(final_value["worker"].is_null());
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &[
+                "native_stop",
+                "native_stop",
+                "native_stop",
+                "native_join",
+                "sink_join"
+            ]
+        );
+    }
+
+    #[test]
+    fn retirement_receipt_preserves_stop_and_join_failure_without_fabricating_worker_evidence() {
+        let (mut owner, state) = session();
+        state.stop_failure.store(true, Ordering::Relaxed);
+        state.native_join_failure.store(true, Ordering::Relaxed);
+        assert!(owner.request_stop().is_err());
+        let outcome = owner.finish().unwrap();
+        let receipt = serde_json::to_value(owner.retirement_observation()).unwrap();
+        assert_eq!(receipt["first_stop_broadcast"]["outcome"], "returned_error");
+        assert_eq!(receipt["native_join"]["outcome"], "returned_error");
+        assert!(receipt["worker_joined"].is_null());
+        let failure = outcome.failure.unwrap();
+        assert!(failure.contains("injected stop failure"));
+        assert!(failure.contains("injected native worker panicked"));
+    }
+
+    #[test]
+    fn retirement_receipt_unexecuted_fields_are_null_and_fixed_size() {
+        let value = serde_json::to_value(WorkerStopObservation::default()).unwrap();
+        assert_eq!(value["stop_request_observed"], false);
+        assert!(value["stop_request_observed_qpc_100ns"].is_null());
+        assert_eq!(value["stream_stop"]["attempted"], false);
+        assert!(value["stream_stop"]["before_qpc_100ns"].is_null());
+        assert!(value["stream_stop"]["after_qpc_100ns"].is_null());
+        assert!(value["stream_stop"]["outcome"].is_null());
+        assert!(size_of::<MeasurementRetirement>() <= 256);
+        for outcome in [
+            CallOutcome::Succeeded,
+            CallOutcome::ReturnedError,
+            CallOutcome::Panicked,
+        ] {
+            assert!(serde_json::to_value(outcome).unwrap().is_string());
+        }
+        let (owner, _) = session();
+        let native = owner.native.as_ref().unwrap();
+        assert!(native.worker_retirement().0.is_none());
+    }
+
+    #[test]
+    fn retirement_windows_bracket_real_call_and_keep_error_or_panic_without_fake_time() {
+        use std::cell::Cell;
+        let ticks = Cell::new(Some(100));
+        let mut receipt = CallWindow::default();
+        let result = receipt.observe_with(&mut || ticks.get(), || {
+            ticks.set(Some(120));
+            Err::<(), _>(17)
+        });
+        assert_eq!(result, Err(17));
+        let json = serde_json::to_value(receipt).unwrap();
+        assert_eq!(json["before_qpc_100ns"], 100);
+        assert_eq!(json["after_qpc_100ns"], 120);
+        assert_eq!(json["outcome"], "returned_error");
+        let mut unavailable = CallWindow::default();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            unavailable.observe_with(&mut || None, || -> Result<()> { panic!("stop panic") })
+        }));
+        assert!(result.is_err());
+        let json = serde_json::to_value(unavailable).unwrap();
+        assert!(json["before_qpc_100ns"].is_null());
+        assert!(json["after_qpc_100ns"].is_null());
+        assert_eq!(json["outcome"], "panicked");
+        let mut regressed = CallWindow::default();
+        let mut readings = [Some(50), Some(49)].into_iter();
+        regressed
+            .observe_with(&mut || readings.next().unwrap(), || Ok::<_, ()>(()))
+            .unwrap();
+        assert!(regressed.after_qpc_100ns.is_none());
+    }
+
+    #[test]
+    fn retirement_worker_stop_only_claims_native_invocation_after_start() {
+        for started in [false, true] {
+            let mut observation = WorkerStopObservation {
+                stream_started: started,
+                ..Default::default()
+            };
+            let calls = std::cell::Cell::new(0);
+            // This is the exact teardown helper, not a second test-only stop.
+            let result = observation.stop_stream(|| {
+                calls.set(calls.get() + 1);
+                Err::<(), _>(23)
+            });
+            assert_eq!(result, Err(23));
+            assert_eq!(calls.get(), 1);
+            let value = serde_json::to_value(observation).unwrap();
+            assert_eq!(value["stream_stop"]["attempted"], started);
+            if started {
+                assert_eq!(value["stream_stop"]["outcome"], "returned_error");
+            } else {
+                assert!(value["stream_stop"]["outcome"].is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn retirement_worker_observes_request_once_without_polling_the_clock_while_running() {
+        let mut observation = WorkerStopObservation::default();
+        assert!(!observation.observe_request(false, || panic!("active loop must not read QPC")));
+        assert!(observation.observe_request(true, || Some(700)));
+        assert!(observation.stop_request_observed);
+        assert_eq!(observation.stop_request_observed_qpc_100ns, Some(700));
+        assert!(observation.observe_request(true, || panic!("must retain first observation")));
+        assert!(!observation.stream_stop.attempted);
+        let mut unavailable = WorkerStopObservation::default();
+        assert!(unavailable.observe_request(true, || None));
+        assert!(unavailable.stop_request_observed);
+        assert!(unavailable.stop_request_observed_qpc_100ns.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retirement_native_join_retains_worker_evidence_only_after_actual_join() {
+        use moiren_windows_audio::{ActivationGate, StopSignal};
+        use std::{sync::mpsc, thread};
+        for panic_worker in [false, true] {
+            let stop = StopSignal::new().unwrap();
+            let gate = ActivationGate::new(stop.clone()).unwrap();
+            let (release_tx, release_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(!panic_worker, "injected native owner panic");
+                NativeCaptureExit {
+                    report: CaptureReport::new(
+                        moiren_windows_audio::capture::CaptureSource::Physical,
+                        moiren_windows_audio::SessionDuration::UntilStopped,
+                    ),
+                    writer: None,
+                    retirement: WorkerStopObservation {
+                        stop_request_observed: true,
+                        stop_request_observed_qpc_100ns: Some(400),
+                        ..Default::default()
+                    },
+                }
+            });
+            let mut native = NativeCapture {
+                worker: Some(worker),
+                started: Arc::new(AtomicBool::new(false)),
+                gate,
+                stop,
+                stop_requested: Arc::new(AtomicBool::new(false)),
+                joined: None,
+                retirement: None,
+            };
+            assert!(native.worker_retirement().0.is_none());
+            assert!(native.worker_retirement().1.is_none());
+            release_tx.send(()).unwrap();
+            let result = native.join();
+            assert_eq!(result.is_err(), panic_worker);
+            // Even a panicked worker was joined, not still running/unknown.
+            assert_eq!(native.worker_retirement().0, Some(true));
+            if panic_worker {
+                assert!(native.worker_retirement().1.is_none());
+            } else {
+                assert_eq!(
+                    native
+                        .worker_retirement()
+                        .1
+                        .unwrap()
+                        .stop_request_observed_qpc_100ns,
+                    Some(400)
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retirement_preparation_cleanup_keeps_stop_join_errors_and_unexecuted_native_stop_unknown() {
+        let (mut owner, state) = session();
+        state.stop_failure.store(true, Ordering::Relaxed);
+        state.native_join_failure.store(true, Ordering::Relaxed);
+        let (report, error) = owner.stop_and_join_native();
+        assert!(report.is_none());
+        // Preserve the existing returned-error priority; both failures remain
+        // visible independently in the fixed observation below.
+        assert!(
+            error
+                .unwrap()
+                .to_string()
+                .contains("injected native worker panicked")
+        );
+        let json = serde_json::to_value(owner.retirement_observation()).unwrap();
+        assert_eq!(json["first_stop_broadcast"]["outcome"], "returned_error");
+        assert_eq!(json["native_join"]["outcome"], "returned_error");
+        assert!(json["worker"].is_null());
+        assert_eq!(&*state.log.lock().unwrap(), &["native_stop", "native_join"]);
+        let failure = MeasurementPreparationFailure::from(anyhow::anyhow!("before native spawn"));
+        assert!(failure.retirement.is_none());
+    }
+
+    #[test]
+    fn preparation_activation_and_native_start_are_distinct() {
+        let (mut owner, state) = session();
+        assert_eq!(owner.info().sample_rate, 44_100);
+        assert_eq!(owner.info().channels, 1);
+        assert_eq!(owner.check().unwrap(), MeasurementProgress::Prepared);
+        assert!(state.log.lock().unwrap().is_empty());
+        owner.activate().unwrap();
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::ZERO)).unwrap(),
+            MeasurementProgress::Starting
+        );
+        state.started.store(true, Ordering::Relaxed);
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(1))).unwrap(),
+            MeasurementProgress::Running {
+                elapsed: Duration::from_secs(1)
+            }
+        );
+        assert!(owner.activate().is_err());
+        assert_eq!(
+            state
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&event| event == "activate")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn start_grace_extends_only_start_acknowledgement_and_expires_at_eight_seconds() {
+        let (owner, state) = session();
+        let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+        owner.activate().unwrap();
+        for elapsed in [Duration::from_secs(5), Duration::from_millis(7999)] {
+            assert_eq!(
+                owner.check_elapsed(Some(elapsed)).unwrap(),
+                MeasurementProgress::Starting
+            );
+        }
+        assert!(owner.check_elapsed(Some(Duration::from_secs(8))).is_err());
+        state.started.store(true, Ordering::Relaxed);
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(10))).unwrap(),
+            MeasurementProgress::DeadlineReached
+        );
+        assert_eq!(owner.config.max_active_duration, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn start_grace_cannot_exceed_three_seconds_or_restart_after_activation() {
+        for grace in [Duration::from_millis(3001), Duration::from_secs(u64::MAX)] {
+            let (owner, state) = session();
+            assert!(owner.with_start_grace(grace).is_err());
+            assert!(!state.log.lock().unwrap().contains(&"activate"));
+        }
+        let (mut owner, _) = session();
+        owner.activate().unwrap();
+        assert!(owner.with_start_grace(Duration::ZERO).is_err());
+        let (mut owner, _) = session();
+        owner.request_stop().unwrap();
+        assert!(owner.with_start_grace(Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn start_grace_still_obeys_earlier_total_deadline_and_owner_sink_failures() {
+        let (owner, _) = session();
+        let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+        owner.config.max_active_duration = Duration::from_secs(6);
+        owner.activate().unwrap();
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(5))).unwrap(),
+            MeasurementProgress::Starting
+        );
+        assert!(owner.check_elapsed(Some(Duration::from_secs(6))).is_err());
+        for native_exit in [true, false] {
+            let (owner, state) = session();
+            let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+            owner.activate().unwrap();
+            if native_exit {
+                state.native_finished.store(true, Ordering::Relaxed);
+            } else {
+                state.sink_finished.store(true, Ordering::Relaxed);
+            }
+            assert!(owner.check_elapsed(Some(Duration::from_secs(5))).is_err());
+            assert!(owner.failures.borrow().is_some());
+        }
+    }
+
+    #[test]
+    fn failed_activation_cannot_retry_and_is_retained_after_cleanup() {
+        let (mut owner, state) = session();
+        state.activation_failure.store(true, Ordering::Relaxed);
+        assert!(owner.activate().is_err());
+        assert!(owner.activate().is_err());
+        assert!(owner.check().is_err());
+        let outcome = owner.finish().unwrap();
+        assert!(
+            outcome
+                .failure
+                .unwrap()
+                .contains("injected activation failure")
+        );
+        assert!(owner.finish().is_err());
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["activate", "native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn health_is_checked_before_deadline_and_start_timeout_fails_closed() {
+        for native_exit in [true, false] {
+            let (mut owner, state) = session();
+            owner.activate().unwrap();
+            if native_exit {
+                state.native_finished.store(true, Ordering::Relaxed);
+            } else {
+                state.sink_finished.store(true, Ordering::Relaxed);
+            }
+            assert!(owner.check_elapsed(Some(Duration::from_secs(10))).is_err());
+        }
+        let (mut owner, state) = session();
+        owner.activate().unwrap();
+        assert_eq!(
+            owner
+                .check_elapsed(Some(Duration::from_millis(4999)))
+                .unwrap(),
+            MeasurementProgress::Starting
+        );
+        assert!(
+            owner
+                .check_elapsed(Some(Duration::from_secs(5)))
+                .unwrap_err()
+                .to_string()
+                .contains("Start")
+        );
+        state.started.store(true, Ordering::Relaxed);
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(10))).unwrap(),
+            MeasurementProgress::DeadlineReached
+        );
+    }
+
+    #[test]
+    fn stop_before_activation_is_idempotent_and_does_not_join() {
+        let (mut owner, state) = session();
+        owner.request_stop().unwrap();
+        owner.request_stop().unwrap();
+        assert_eq!(owner.check().unwrap(), MeasurementProgress::Stopping);
+        assert!(owner.activate().is_err());
+        assert!(
+            state
+                .log
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|&event| event == "native_stop")
+        );
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.activation_elapsed.is_none());
+        assert!(outcome.failure.is_some());
+        assert!(owner.check().is_err());
+    }
+
+    #[test]
+    fn cleanup_preserves_independent_failures_and_never_cancels_explicit_drain() {
+        let (mut owner, state) = session();
+        owner.activate().unwrap();
+        state.stop_failure.store(true, Ordering::Relaxed);
+        state.native_join_failure.store(true, Ordering::Relaxed);
+        state.sink_join_failure.store(true, Ordering::Relaxed);
+        assert!(owner.request_stop().is_err());
+        let outcome = owner.finish().unwrap();
+        let failure = outcome.failure.unwrap();
+        for expected in [
+            "stop failure",
+            "native worker panicked",
+            "sink worker panicked",
+        ] {
+            assert!(failure.contains(expected), "{failure}");
+        }
+        assert!(outcome.native_capture.is_none() && outcome.sink.is_none());
+        let log = state.log.lock().unwrap();
+        assert_eq!(
+            &log[log.len() - 3..],
+            &["native_stop", "native_join", "sink_join"]
+        );
+        assert!(!log.contains(&"sink_cancel"));
+    }
+
+    #[test]
+    fn unwind_drop_joins_native_before_sink_cancellation() {
+        let (owner, state) = session();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _owner = owner;
+            panic!("injected controller unwind");
+        }));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_join", "sink_cancel", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn config_rechecks_caps_and_negotiated_format_without_nominal_identity() {
+        let original = config();
+        original.validate().unwrap();
+        for index in 0..13 {
+            let mut invalid = original.clone();
+            match index {
+                0 => invalid.input_endpoint_id = " ".into(),
+                1 => invalid.input_endpoint_id.push('\0'),
+                2 => invalid.max_active_duration = Duration::ZERO,
+                3 => invalid.max_active_duration = Duration::from_secs(7201),
+                4 => invalid.max_active_duration = Duration::from_millis(1500),
+                5 => invalid.ring_frames = usize::MAX,
+                6 => invalid.ring_frames = 0,
+                7 => invalid.max_pcm_bytes = 0,
+                8 => invalid.max_pcm_bytes = 3 * 1024 * 1024 * 1024 + 1,
+                9 => invalid.max_metadata_bytes = 256 * 1024 * 1024 + 1,
+                10 => invalid.max_packets = 1_000_001,
+                11 => invalid.max_metadata_bytes = 0,
+                _ => invalid.max_packets = 0,
+            }
+            assert!(
+                invalid.validate().is_err(),
+                "admitted invalid variant {index}"
+            );
+        }
+        for (rate, channels) in [(0, 1), (48_000, 0), (48_000, 3)] {
+            assert!(original.negotiated_info(rate, channels).is_err());
+        }
+        let negotiated = original.negotiated_info(96_000, 2).unwrap();
+        assert_eq!(negotiated.sample_rate, 96_000);
+        assert_eq!(negotiated.channels, 2);
+        assert_eq!(negotiated.max_frames, 128);
+        assert_eq!(negotiated.ring_frames, 8);
+        assert_eq!(negotiated.input_endpoint_id, original.input_endpoint_id);
+        let mut tiny = original;
+        tiny.max_pcm_bytes = 3;
+        assert!(tiny.negotiated_info(44_100, 1).is_err());
+        for (pcm, packets) in [("", "packet"), ("pcm", ""), ("same", "same")] {
+            assert!(
+                MeasurementPaths {
+                    pcm: pcm.into(),
+                    packets: packets.into()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        MeasurementPaths {
+            pcm: "pcm".into(),
+            packets: "packets".into(),
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn prepared_health_already_detects_dead_native_or_sink_without_activation() {
+        for native in [true, false] {
+            let (owner, state) = session();
+            if native {
+                state.native_finished.store(true, Ordering::Relaxed);
+            } else {
+                state.sink_finished.store(true, Ordering::Relaxed);
+            }
+            assert!(
+                owner.check().is_err(),
+                "prepared health cannot hide a dead peer"
+            );
+            assert!(
+                state.log.lock().unwrap().is_empty(),
+                "health must not activate/stop/join peers"
+            );
+        }
+    }
+
+    #[test]
+    fn native_outcome_reconciliation_rejects_missing_loss_and_inconsistent_summaries() {
+        use moiren_windows_audio::capture::{
+            PcmEvidenceConfig, PcmEvidencePacket, pcm_evidence_stream,
+        };
+        let (mut writer, mut reader) = pcm_evidence_stream(
+            PcmEvidenceConfig {
+                capacity_frames: 2,
+                detect_position_gaps: true,
+            },
+            44_100,
+            1,
+        )
+        .unwrap();
+        writer
+            .record_packet(
+                &[0; 8],
+                PcmEvidencePacket {
+                    frames: 2,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 42,
+                },
+            )
+            .unwrap();
+        writer.close();
+        assert!(reader.pop().is_some() && reader.pop().is_some());
+        let summary = writer.snapshot();
+        let mut failure = None;
+        reconcile(
+            true,
+            true,
+            None,
+            Some(summary),
+            Some(&sink_report()),
+            &info(),
+            &mut failure,
+        );
+        assert!(failure.is_none(), "{failure:?}");
+        for variant in 0..17 {
+            let mut summary = summary;
+            let mut sink = sink_report();
+            match variant {
+                0 => summary.dropped_frames = 1,
+                1 => summary.overflow_packets = 1,
+                2 => summary.reader_abandoned_packets = 1,
+                3 => summary.gap_events = 1,
+                4 => summary.discontinuity_events = 1,
+                5 => summary.timestamp_error_packets = 1,
+                6 => summary.position_overflow_packets = 1,
+                7 => summary.counters_saturated = true,
+                8 => summary.sequence_exhausted = true,
+                9 => summary.stored_frames = 0,
+                10 => sink.written_frames = 1,
+                11 => sink.complete_packets = 0,
+                12 => sink.nonfinite_samples = 1,
+                13 => sink.missing_packets = 1,
+                14 => sink.incomplete_packets = 1,
+                15 => sink.counters_saturated = true,
+                _ => sink.cancelled = true,
+            }
+            let mut failure = None;
+            reconcile(
+                true,
+                true,
+                None,
+                Some(summary),
+                Some(&sink),
+                &info(),
+                &mut failure,
+            );
+            assert!(failure.is_some(), "quality variant {variant} escaped");
+        }
+        let mut failure = None;
+        reconcile(
+            false,
+            false,
+            Some("retained native failure"),
+            None,
+            Some(&sink_report()),
+            &info(),
+            &mut failure,
+        );
+        let failure = failure.unwrap();
+        for expected in [
+            "retained native failure",
+            "did not start and stop cleanly",
+            "summary is missing",
+        ] {
+            assert!(failure.contains(expected), "{failure}");
+        }
+    }
+
+    #[test]
+    fn failure_byte_cap_includes_separator_and_utf8_boundaries() {
+        for remaining in 0..=6 {
+            let prefix = "x".repeat(MAX_FAILURE_BYTES - remaining);
+            let mut failure = Some(prefix.clone());
+            append_failure(&mut failure, "\u{1f9ea}failure");
+            let failure = failure.unwrap();
+            assert!(
+                failure.len() <= MAX_FAILURE_BYTES,
+                "separator escaped cap with {remaining} bytes remaining"
+            );
+            assert!(failure.starts_with(&prefix));
+            assert!(std::str::from_utf8(failure.as_bytes()).is_ok());
+        }
+        let mut failure = None;
+        append_failure(&mut failure, &"\u{1f9ea}".repeat(MAX_FAILURE_BYTES));
+        assert_eq!(failure.unwrap().len(), MAX_FAILURE_BYTES);
+    }
+
+    #[test]
+    fn partial_preparation_and_panicking_native_join_still_retire_owned_resources() {
+        let state = Arc::new(State::default());
+        let owner = MeasurementSession::own_native(
+            config(),
+            info(),
+            FakeNative {
+                state: state.clone(),
+                report: None,
+            },
+        );
+        drop(owner);
+        assert_eq!(&*state.log.lock().unwrap(), &["native_stop", "native_join"]);
+
+        struct PanickingNative(Arc<State>);
+        impl NativeOwner for PanickingNative {
+            fn activate(&self) -> Result<()> {
+                Ok(())
+            }
+            fn has_started(&self) -> bool {
+                true
+            }
+            fn is_finished(&self) -> bool {
+                false
+            }
+            fn request_stop(&self) -> Result<()> {
+                self.0.log.lock().unwrap().push("native_stop");
+                Ok(())
+            }
+            fn join(&mut self) -> Result<CaptureReport> {
+                self.0.log.lock().unwrap().push("native_join");
+                panic!("injected lifecycle join panic");
+            }
+        }
+        let state = Arc::new(State::default());
+        let mut owner =
+            MeasurementSession::own_native(config(), info(), PanickingNative(state.clone()));
+        owner.sink = Some(Box::new(FakeSink(state.clone())));
+        owner.activate().unwrap();
+        let outcome = owner.finish().unwrap();
+        assert!(outcome.native_capture.is_none());
+        assert!(
+            outcome.sink.is_some(),
+            "native panic must not suppress partial sink report"
+        );
+        assert!(outcome.failure.unwrap().contains("native join panicked"));
+        assert_eq!(
+            &*state.log.lock().unwrap(),
+            &["native_stop", "native_join", "sink_join"]
+        );
+    }
+
+    #[test]
+    fn blocked_sink_cannot_delay_stop_and_native_join_then_retained_drain() {
+        use std::{sync::mpsc, thread};
+        struct BlockedFinish {
+            state: Arc<State>,
+            entered: mpsc::SyncSender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl SinkOwner for BlockedFinish {
+            fn check(&self) -> Result<()> {
+                Ok(())
+            }
+            fn cancel(&self) {
+                panic!("explicit finish must drain, not cancel");
+            }
+            fn finish(&mut self) -> Result<SinkReport> {
+                self.state.log.lock().unwrap().push("sink_join");
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+                Ok(sink_report())
+            }
+        }
+        let state = Arc::new(State::default());
+        state.native_join_failure.store(true, Ordering::Relaxed);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let mut owner = MeasurementSession::own_native(
+            config(),
+            info(),
+            FakeNative {
+                state: state.clone(),
+                report: None,
+            },
+        );
+        owner.sink = Some(Box::new(BlockedFinish {
+            state: state.clone(),
+            entered: entered_tx,
+            release: release_rx,
+        }));
+        owner.activate().unwrap();
+        let controller = thread::spawn(move || owner.finish().unwrap());
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let log = state.log.lock().unwrap().clone();
+        release_tx.send(()).unwrap();
+        let outcome = controller.join().unwrap();
+        assert_eq!(log, ["activate", "native_stop", "native_join", "sink_join"]);
+        assert_eq!(outcome.sink.unwrap().written_frames, 2);
+        assert!(outcome.failure.unwrap().contains("native worker panicked"));
+    }
+
+    #[test]
+    fn real_ring_is_closed_before_drain_and_quality_failure_keeps_pcm_artifacts() {
+        use moiren_windows_audio::capture::{
+            PcmEvidenceConfig, PcmEvidencePacket, PcmEvidenceWriter, pcm_evidence_stream,
+        };
+        use std::{fs, sync::atomic::AtomicU64};
+        struct RingNative {
+            state: Arc<State>,
+            writer: PcmEvidenceWriter,
+        }
+        impl NativeOwner for RingNative {
+            fn activate(&self) -> Result<()> {
+                Ok(())
+            }
+            fn has_started(&self) -> bool {
+                true
+            }
+            fn is_finished(&self) -> bool {
+                false
+            }
+            fn request_stop(&self) -> Result<()> {
+                self.state.log.lock().unwrap().push("native_stop");
+                Ok(())
+            }
+            fn join(&mut self) -> Result<CaptureReport> {
+                self.state.log.lock().unwrap().push("native_join");
+                self.writer.close();
+                anyhow::bail!("injected native quality failure; waveform must still drain")
+            }
+        }
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "moiren-measurement-session-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let (mut writer, reader) = pcm_evidence_stream(
+            PcmEvidenceConfig {
+                capacity_frames: 2,
+                detect_position_gaps: false,
+            },
+            44_100,
+            1,
+        )
+        .unwrap();
+        let bytes = [0x8000_0000u32.to_le_bytes(), 0x3e80_0000u32.to_le_bytes()].concat();
+        writer
+            .record_packet(
+                &bytes,
+                PcmEvidencePacket {
+                    frames: 2,
+                    flags: 0x8000_0000,
+                    device_position_frames: 7,
+                    qpc_100ns: 42,
+                },
+            )
+            .unwrap();
+        let state = Arc::new(State::default());
+        let mut owner = MeasurementSession::own_native(
+            config(),
+            info(),
+            RingNative {
+                state: state.clone(),
+                writer,
+            },
+        );
+        owner.sink = Some(Box::new(
+            EvidenceSink::create(
+                reader,
+                44_100,
+                1,
+                &root.join("measurement.f32le"),
+                &root.join("measurement.packets.jsonl"),
+                crate::measurement_sink::SinkLimits {
+                    max_frames: 256,
+                    max_pcm_bytes: 1024,
+                    max_metadata_bytes: 4096,
+                    max_packets: 10,
+                },
+            )
+            .unwrap(),
+        ));
+        owner.activate().unwrap();
+        let outcome = owner.finish().unwrap();
+        assert_eq!(fs::read(root.join("measurement.f32le")).unwrap(), bytes);
+        assert_eq!(outcome.sink.as_ref().unwrap().written_frames, 2);
+        assert_eq!(outcome.sink.as_ref().unwrap().complete_packets, 1);
+        assert!(!outcome.sink.as_ref().unwrap().cancelled);
+        assert!(outcome.failure.unwrap().contains("native quality failure"));
+        assert_eq!(&*state.log.lock().unwrap(), &["native_stop", "native_join"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

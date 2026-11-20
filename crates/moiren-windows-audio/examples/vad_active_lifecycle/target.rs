@@ -258,7 +258,8 @@ fn active_remove(
         report.stop_after_remove_error = Some(format!("{error:#}"));
     }
     drop(capture); // Release all IAudioClient/service/event owners before polling.
-    let removed = wait_removed(control, previous)
+    let removed = control
+        .confirm_removed(previous, DEADLINE)
         .context("bounded removal after releasing original client; no recreate attempted")?;
     report.after_client_release = Some(removed.into());
     let recreated = create_microphone(control)?;
@@ -327,27 +328,6 @@ fn wait_running(
             "native capture never reached driver RUN"
         );
         std::thread::sleep(POLL);
-    }
-}
-
-fn wait_removed(
-    control: &mut ControlClient,
-    mut previous: EndpointSnapshot,
-) -> anyhow::Result<EndpointSnapshot> {
-    let until = Instant::now() + DEADLINE;
-    loop {
-        validation::require_retiring(previous.state(), previous.gate_open())?;
-        if previous.state() == PdoState::Removed {
-            return Ok(previous);
-        }
-        ensure!(
-            Instant::now() < until,
-            "old endpoint remains Removing after client release"
-        );
-        std::thread::sleep(POLL);
-        previous = control
-            .query(previous.key())?
-            .require_progress_after(previous)?;
     }
 }
 

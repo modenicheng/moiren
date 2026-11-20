@@ -2,7 +2,7 @@
 //!
 //! Single source for the pieces the retired dual stacks had duplicated:
 //! PCM/floating-point sub-format GUIDs, WAVEFORMATEX descriptor parsing, the
-//! IAudioClient3 rejection matrix, endpoint friendly names, and the shared
+//! IAudioClient3 period queries, endpoint friendly names, and the shared
 //! and exclusive initialization sequences.
 
 #[cfg(feature = "probe-tools")]
@@ -12,9 +12,11 @@ use windows::core::Interface;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{E_NOINTERFACE, E_NOTIMPL, E_UNEXPECTED, S_OK},
+        Foundation::{E_UNEXPECTED, S_OK},
         Media::Audio::{
-            AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL, AUDCLNT_E_DEVICE_IN_USE,
+            AUDCLNT_E_INVALID_DEVICE_PERIOD, AUDCLNT_E_UNSUPPORTED_FORMAT,
+            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient, IAudioClient3, IMMDevice,
             WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
@@ -187,21 +189,6 @@ pub(crate) unsafe fn parse_descriptor(
     }
 }
 
-/// HRESULTs that abandon the IAudioClient3 path in favor of the legacy
-/// shared initialization after a capability query (and, in the professional
-/// stack, after the interface query as well): the endpoint does not
-/// implement, or rejects the format for, the Client3 negotiation.
-///
-/// The legacy stack additionally treats a plain `E_NOINTERFACE` from the
-/// interface query alone as the narrower `Client3Unavailable` fallback; that
-/// stage strictness stays at its call site.
-pub(crate) fn client3_rejects_format(code: windows::core::HRESULT) -> bool {
-    matches!(
-        code,
-        E_NOINTERFACE | E_NOTIMPL | AUDCLNT_E_UNSUPPORTED_FORMAT
-    )
-}
-
 /// GetSharedModeEnginePeriod frame bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnginePeriods {
@@ -330,6 +317,54 @@ pub(crate) unsafe fn initialize_legacy_shared(
     }
 }
 
+/// Shared `Initialize` failures whose class is the buffer/period negotiation
+/// itself: with the 0/0 default durations the engine can pick a layout the
+/// endpoint then refuses, including raw `0x8889000A` from an AUTOCONVERTPCM
+/// stream on an endpoint whose mix differs from the client format. An
+/// explicit, period-aligned buffer duration retry can recover.
+pub(crate) fn shared_initialize_retryable(code: windows::core::HRESULT) -> bool {
+    matches!(
+        code,
+        AUDCLNT_E_DEVICE_IN_USE
+            | AUDCLNT_E_INVALID_DEVICE_PERIOD
+            | AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL
+    )
+}
+
+/// Explicit legacy shared buffer duration: twice the engine's default device
+/// period, which is trivially an integer multiple of that period and satisfies
+/// the shared-mode scheduling rule that a buffer spans whole periods.
+pub(crate) fn aligned_shared_buffer_duration(default_period_100ns: i64) -> Option<i64> {
+    (default_period_100ns > 0).then(|| default_period_100ns.saturating_mul(2))
+}
+
+/// Legacy shared initialization with an explicit buffer duration and zero
+/// periodicity. Retry path for the failures matched by
+/// [`shared_initialize_retryable`].
+///
+/// # Safety
+///
+/// `format` must be valid for reads of the complete base+cbSize allocation
+/// for the duration of the call.
+pub(crate) unsafe fn initialize_legacy_shared_with_duration(
+    client: &IAudioClient,
+    format: *const WAVEFORMATEX,
+    session_guid: Option<&GUID>,
+    buffer_duration_100ns: i64,
+) -> windows::core::Result<()> {
+    // SAFETY: caller guarantees the descriptor (see above).
+    unsafe {
+        client.Initialize(
+            AUDCLNT_SHAREMODE_SHARED,
+            legacy_shared_flags(),
+            buffer_duration_100ns,
+            0,
+            format,
+            session_guid.map(std::ptr::from_ref),
+        )
+    }
+}
+
 /// Read `PKEY_Device_FriendlyName` from an endpoint.
 pub(crate) fn friendly_name(device: &IMMDevice) -> windows::core::Result<String> {
     unsafe {
@@ -349,9 +384,10 @@ mod tests {
     use super::{EXTENSION_BYTES, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
     use windows::{
         Win32::{
-            Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
+            Foundation::E_INVALIDARG,
             Media::Audio::{
-                AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
+                AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL, AUDCLNT_E_DEVICE_IN_USE,
+                AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_INVALID_DEVICE_PERIOD,
                 AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
                 AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
                 WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
@@ -458,20 +494,6 @@ mod tests {
     }
 
     #[test]
-    fn client3_rejection_covers_missing_and_unsupported_queries() {
-        for code in [E_NOINTERFACE, E_NOTIMPL, AUDCLNT_E_UNSUPPORTED_FORMAT] {
-            assert!(super::client3_rejects_format(code));
-        }
-        for code in [
-            AUDCLNT_E_DEVICE_INVALIDATED,
-            E_INVALIDARG,
-            AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
-        ] {
-            assert!(!super::client3_rejects_format(code));
-        }
-    }
-
-    #[test]
     fn legacy_flags_select_conversion_and_default_persistence() {
         assert_eq!(
             super::legacy_shared_flags(),
@@ -489,5 +511,39 @@ mod tests {
         );
         assert_eq!(super::exclusive_frames_duration(480, 48_000), 100_000);
         assert_eq!(super::exclusive_frames_duration(1, 44_100), 227);
+    }
+
+    #[test]
+    fn shared_retry_matches_the_observed_rejection_class() {
+        // Regression: the HOST conversion-path rejection retained raw
+        // 0x8889000A; the retry must also cover the period-alignment class.
+        for code in [
+            AUDCLNT_E_DEVICE_IN_USE,
+            AUDCLNT_E_INVALID_DEVICE_PERIOD,
+            AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL,
+        ] {
+            assert!(super::shared_initialize_retryable(code));
+        }
+        for code in [
+            AUDCLNT_E_UNSUPPORTED_FORMAT,
+            AUDCLNT_E_DEVICE_INVALIDATED,
+            E_INVALIDARG,
+        ] {
+            assert!(!super::shared_initialize_retryable(code));
+        }
+    }
+
+    #[test]
+    fn aligned_shared_duration_is_two_whole_engine_periods() {
+        assert_eq!(super::aligned_shared_buffer_duration(0), None);
+        assert_eq!(super::aligned_shared_buffer_duration(-1), None);
+        assert_eq!(
+            super::aligned_shared_buffer_duration(100_000),
+            Some(200_000)
+        );
+        assert_eq!(
+            super::aligned_shared_buffer_duration(i64::MAX),
+            Some(i64::MAX.saturating_mul(2))
+        );
     }
 }

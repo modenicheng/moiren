@@ -2,6 +2,11 @@
 //! graph compiler, rendered against a stereo source, and checked for its
 //! parameter schema. The audio/FFI behavior itself is covered by the
 //! moiren-plugins fixture suite; this file proves the engine plumbing.
+//!
+//! Native-only: Miri cannot spawn rustc or execute the loaded cdylib. The
+//! portable compiler tests remain enabled in both Miri borrow models.
+
+#![cfg(not(miri))]
 
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 

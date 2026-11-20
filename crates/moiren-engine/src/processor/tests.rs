@@ -20,6 +20,7 @@ mod gain;
 mod pan;
 
 const CONTEXT: ProcessContext = ProcessContext {
+    execution: None,
     timeline_epoch: 1,
     timeline_start: 17,
     frames: 4,
