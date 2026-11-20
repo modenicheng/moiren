@@ -680,34 +680,35 @@ impl LiveSession<'_> {
         if let Some(snapshot) = self.handle.try_snapshot() {
             self.observe_snapshot(&snapshot, report)?;
             let evidence = Evidence::from(snapshot.as_ref());
-            record(report, stage, evidence.clone(), shared);
-            ensure!(
-                evidence.owner_running(self.ids, self.apply_request)
-                    && evidence.active_revision == Some(self.revision),
-                "{stage}: Running/identity/confirmed revision changed: {evidence:?}"
-            );
-            for export in &evidence.exports {
-                let transition = report
-                    .gate_transitions
-                    .iter_mut()
-                    .find(|transition| transition.endpoint_id == export.endpoint_id)
-                    .context("missing initial gate/stamp baseline")?;
-                let observed = transition.observe(
-                    export.native_stamp,
-                    export.gate_open,
-                    now_ms,
-                    phase_deadline
-                        .min(self.deadline)
-                        .saturating_duration_since(self.started)
-                        .as_millis(),
+            let observed = (|| {
+                ensure!(
+                    evidence.owner_running(self.ids, self.apply_request)
+                        && evidence.active_revision == Some(self.revision),
+                    "{stage}: Running/identity/confirmed revision changed: {evidence:?}"
                 );
-                // Keep partial transition events even if this observation is
-                // rejected and later service cleanup reaches the watchdog.
-                publish(shared, report);
-                observed?;
-            }
-            publish(shared, report);
-            return Ok(evidence.gates_open());
+                let deadline_ms = phase_deadline
+                    .min(self.deadline)
+                    .saturating_duration_since(self.started)
+                    .as_millis();
+                for export in &evidence.exports {
+                    let transition = report
+                        .gate_transitions
+                        .iter_mut()
+                        .find(|transition| transition.endpoint_id == export.endpoint_id)
+                        .context("missing initial gate/stamp baseline")?;
+                    transition.observe(
+                        export.native_stamp,
+                        export.gate_open,
+                        now_ms,
+                        deadline_ms,
+                    )?;
+                }
+                Ok(evidence.gates_open())
+            })();
+            // Publish the checkpoint and any partial gate transition together,
+            // even on failure. This copies the accumulated soak trail once.
+            record(report, stage, evidence, shared);
+            return observed;
         }
         // A missing current observation cannot satisfy end-of-phase readiness.
         Ok(false)
