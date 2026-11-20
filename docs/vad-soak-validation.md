@@ -65,6 +65,12 @@ For a looping WAV supplied through `-PcmFile`, the runner verifies the requested
 signal duration in `soak_music` in the final probe report. The generated signal
 mode records its duration in `soak_pcm`.
 
+When capture packet positions first jump forward, the probe retains that
+packet's sequence number, expected and observed device frames, and the adjacent
+packet QPC timestamps in `native_diagnostics.capture.first_gap`. Use those
+timestamps to align an audio trace with the native capture gap. The evidence
+remains available as subsequent good packets update the rolling counters.
+
 Keep `running.json`, `resources.jsonl`, `stdout.log`, `stderr.log`, the probe's
 periodic progress, its final `report.json`, and the runner's `result.json`.
 The resource log is streamed and flushed; the runner retains no sample array

@@ -1011,6 +1011,15 @@ pub(super) fn analyze_window(
     }
     window
 }
+#[derive(Clone, Debug, Serialize)]
+struct CaptureGap {
+    packet_number: u64,
+    expected_device_frame: u64,
+    observed_device_frame: u64,
+    previous_qpc_100ns: Option<u64>,
+    observed_qpc_100ns: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct CapturePosition {
     pub packets: u64,
@@ -1022,6 +1031,8 @@ pub(super) struct CapturePosition {
     pub first_device_frame: Option<u64>,
     pub last_device_frame: Option<u64>,
     pub last_qpc_100ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_gap: Option<CaptureGap>,
     expected_next_frame: Option<u64>,
 }
 
@@ -1048,6 +1059,15 @@ impl CapturePosition {
         if let Some(expected) = self.expected_next_frame {
             if frame > expected {
                 self.inferred_gap_frames += frame - expected;
+                // Keep the adjacent packet coordinates for trace alignment
+                // after later packets advance the rolling position and QPC.
+                self.first_gap.get_or_insert(CaptureGap {
+                    packet_number: self.packets,
+                    expected_device_frame: expected,
+                    observed_device_frame: frame,
+                    previous_qpc_100ns: self.last_qpc_100ns,
+                    observed_qpc_100ns: qpc,
+                });
             } else if frame < expected {
                 self.regressions += 1;
             }
@@ -1390,6 +1410,32 @@ mod tests {
         assert!(position.observe(u64::MAX, 500, 480, false, true));
         assert_eq!(position.timestamp_errors, 1);
         assert_eq!(position.last_device_frame, Some(0));
+    }
+
+    #[test]
+    fn capture_position_preserves_the_first_gap_for_trace_alignment() {
+        let mut position = CapturePosition::default();
+        assert!(!position.observe(0, 100_000, 480, false, false));
+        assert!(position.observe(960, 200_000, 480, false, true));
+        // The first trusted packet after an untrusted timestamp is a new anchor.
+        assert!(!position.observe(1_440, 300_000, 480, false, false));
+        assert!(position.first_gap.is_none());
+        assert!(position.observe(2_400, 500_000, 480, false, false));
+        assert!(position.observe(3_840, 800_000, 480, true, false));
+        assert!(!position.observe(4_320, 900_000, 480, false, false));
+        assert_eq!(position.inferred_gap_frames, 1_440);
+        assert_eq!(position.last_qpc_100ns, Some(900_000));
+        let evidence = serde_json::to_value(position).unwrap();
+        assert_eq!(
+            evidence["first_gap"],
+            serde_json::json!({
+                "packet_number": 4,
+                "expected_device_frame": 1_920,
+                "observed_device_frame": 2_400,
+                "previous_qpc_100ns": 300_000,
+                "observed_qpc_100ns": 500_000,
+            })
+        );
     }
 
     #[test]
