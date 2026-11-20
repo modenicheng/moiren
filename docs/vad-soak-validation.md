@@ -65,6 +65,11 @@ For a looping WAV supplied through `-PcmFile`, the runner verifies the requested
 signal duration in `soak_music` in the final probe report. The generated signal
 mode records its duration in `soak_pcm`.
 
+The generated signal allows up to one second and 48,000 capture frames for
+settling after each pattern change at 48 kHz. If a packet exhausts the frame
+budget within that second, its remaining frames enter waveform validation. A
+discontinuity on that packet also enters the steady-state quality check.
+
 When capture packet positions first jump forward, the probe retains that
 packet's sequence number, expected and observed device frames, and the adjacent
 packet QPC timestamps in `native_diagnostics.capture.first_gap`. Use those
