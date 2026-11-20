@@ -276,7 +276,7 @@ fn queue_degradation_counts_surface_through_the_fault_channel() {
     let runtime = spawn_service();
     let handle = runtime.handle();
     let mut state = UiState::new(handle.clone(), initial_projection(&handle));
-        assert!(
+    assert!(
         !crate::ui::shell::fault_popover::has_unlocated(&state),
         "a clean session lists no unlocated diagnostics"
     );
