@@ -1185,14 +1185,15 @@ fn a_returning_absent_endpoint_publishes_a_resource_event() {
     // The prepared transport is dropped without attaching; the absence watch
     // is a backend-level concern.
     drop(prepared);
-    let event = backend
-        .poll_resource()
+    // The probe sweep runs off-thread (audit X9): the first poll spawns it,
+    // a later poll harvests its event.
+    let event = poll_resource_settled(&backend, Duration::from_millis(500))
         .expect("the returning device emits an event");
     assert_eq!(event.node, source);
     assert_eq!(event.configuration, project.nodes[&source]);
     assert!(event.available);
     assert!(
-        backend.poll_resource().is_none(),
+        poll_resource_settled(&backend, Duration::from_millis(200)).is_none(),
         "the entry released with its event"
     );
 }
@@ -1202,6 +1203,26 @@ fn a_returning_absent_endpoint_publishes_a_resource_event() {
 // ---------------------------------------------------------------------------
 
 use std::time::{Duration, Instant};
+
+/// Poll `poll_resource` until the absence sweep settles: the event if one
+/// was harvested, or `None` once the timeout passes with no verdict. The
+/// fast test probes settle in milliseconds; the timeout only guards a
+/// wedged sweep, which the watch itself abandons at its deadline.
+fn poll_resource_settled(
+    backend: &ProfessionalBackend<f64>,
+    timeout: Duration,
+) -> Option<moiren_engine::host::ResourceEvent> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(event) = backend.poll_resource() {
+            return Some(event);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
 
 fn wedged_output_backend() -> ProfessionalBackend<f64> {
     ProfessionalBackend::<f64>::new()
@@ -1354,7 +1375,7 @@ fn stuck_endpoints_skip_reopens_until_the_device_is_seen_missing() {
             .then(|| "{wedged-output}".to_owned())
     }));
     assert!(
-        backend.poll_resource().is_none(),
+        poll_resource_settled(&backend, Duration::from_millis(500)).is_none(),
         "a stuck endpoint that still enumerates has not returned"
     );
 
@@ -1362,16 +1383,15 @@ fn stuck_endpoints_skip_reopens_until_the_device_is_seen_missing() {
     // the recovery event for the wedged node. The watch probes at most once
     // per second, so each transition waits out the throttle interval.
     present.store(false, Ordering::Release);
-    assert!(backend.poll_resource().is_none());
+    assert!(poll_resource_settled(&backend, Duration::from_millis(300)).is_none());
     std::thread::sleep(Duration::from_millis(1100));
     assert!(
-        backend.poll_resource().is_none(),
+        poll_resource_settled(&backend, Duration::from_millis(300)).is_none(),
         "the missing observation clears the stuck verdict without an event"
     );
     present.store(true, Ordering::Release);
     std::thread::sleep(Duration::from_millis(1100));
-    let event = backend
-        .poll_resource()
+    let event = poll_resource_settled(&backend, Duration::from_secs(1))
         .expect("the re-plugged endpoint reports its return");
     assert_eq!(event.node, sink);
     assert_eq!(event.configuration, project.nodes[&sink]);
@@ -1671,23 +1691,22 @@ fn a_runtime_unplug_degrades_to_a_null_stream_and_upgrades_on_return() {
     // A still-enumerating endpoint has not "returned": the suppress verdict
     // holds, exactly like a stuck endpoint.
     assert!(
-        backend.poll_resource().is_none(),
+        poll_resource_settled(&backend, Duration::from_millis(500)).is_none(),
         "the still-enumerating endpoint is suppressed"
     );
     // Re-plug cycle: missing once clears the verdict, the return emits the
     // upgrade event. The watch probes at most once per second, so each
     // transition waits out the throttle interval.
     present.store(false, Ordering::Release);
-    assert!(backend.poll_resource().is_none());
+    assert!(poll_resource_settled(&backend, Duration::from_millis(300)).is_none());
     std::thread::sleep(Duration::from_millis(1100));
     assert!(
-        backend.poll_resource().is_none(),
+        poll_resource_settled(&backend, Duration::from_millis(300)).is_none(),
         "the missing observation clears the verdict without an event"
     );
     present.store(true, Ordering::Release);
     std::thread::sleep(Duration::from_millis(1100));
-    let event = backend
-        .poll_resource()
+    let event = poll_resource_settled(&backend, Duration::from_secs(1))
         .expect("the re-plugged endpoint reports its return");
     assert_eq!(event.node, source);
     assert_eq!(event.configuration, project.nodes[&source]);
@@ -1761,8 +1780,7 @@ fn a_runtime_unplug_that_leaves_enumeration_upgrades_without_a_second_cycle() {
     // emits the upgrade event — the verdict was consumed at resolve time.
     present.store(true, Ordering::Release);
     std::thread::sleep(Duration::from_millis(1100));
-    let event = backend
-        .poll_resource()
+    let event = poll_resource_settled(&backend, Duration::from_secs(1))
         .expect("the returning device upgrades without a second unplug cycle");
     assert_eq!(event.node, source);
     assert_eq!(event.configuration, project.nodes[&source]);
