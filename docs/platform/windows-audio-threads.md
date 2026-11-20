@@ -110,6 +110,29 @@ rules:
   `pump_if_due`), so no publication-side wakeup ever originates on a realtime
   thread.
 
+## Teardown and open bounds (issue #105)
+
+Every blocking wait on a control-side teardown or open path is bounded, and
+the bounds are layered:
+
+- **Open, per native device group** — 10 s (`OPEN_DEADLINE`,
+  `engine_backend.rs`): a wedged endpoint degrades to a null stream instead
+  of freezing session start.
+- **Teardown, per resource** — 2 s (`NATIVE_TEARDOWN_DEADLINE`, `lib.rs`):
+  bounds one worker join, one auxiliary join, one capture-session drop join,
+  and the ASIO detach reader barrier. A resource that misses its deadline is
+  abandoned (fenced + detached); its late tail unwinds on its own thread.
+- **Teardown, whole professional transport** — 4 × the per-resource deadline
+  (`teardown_budget`, `engine_backend/owner.rs`): one budget shared across
+  the serial worker and auxiliary joins, so many simultaneously wedged
+  drivers stretch Stop and app exit to the budget, not to
+  groups × per-resource deadline. Slow-but-alive teardowns finishing inside
+  their own deadlines never reach it.
+
+The abandonment semantics are uniform: bounded detection, unbounded
+recovery on the detached thread. What is knowingly not covered by an open
+deadline is recorded in the code where the gap lives.
+
 ## Shadow-compiled tests
 
 `src/asio_rt_tests.rs` and `src/engine_backend/recovery_host_tests.rs` are not

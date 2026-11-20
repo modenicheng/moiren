@@ -50,6 +50,13 @@ pub(crate) const NATIVE_SAMPLE_RATE: u32 = 48_000;
 /// abandoning a slow-but-alive teardown — and stays tighter than the 10 s
 /// open bound because teardown blocks a user-initiated Stop or app exit.
 ///
+/// This bounds **one** resource (worker, auxiliary, capture session, ASIO
+/// detach barrier). The professional transport additionally caps its whole
+/// serial cleanup pass at a multiple of this deadline
+/// (`engine_backend/owner.rs::teardown_budget`), so many simultaneously
+/// wedged drivers stretch Stop and exit to that budget, not to
+/// groups × this deadline.
+///
 /// Windows-only like both of its users (the professional and virtual
 /// owners); other platforms compile no native owner teardown.
 #[cfg(windows)]
