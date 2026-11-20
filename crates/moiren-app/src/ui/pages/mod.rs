@@ -7,9 +7,21 @@ pub(crate) mod mixer;
 pub(crate) mod settings;
 
 // The pages render against the shell's shared surface (gpui prelude, theme,
-// service types, StudioShell). Re-exported here so page modules keep their
-// `use super::*` glob after moving out of the shell module.
-pub(crate) use crate::ui::shell::*;
+// service types, shared widgets). Re-exported here — explicitly, without a
+// glob back into the shell — so page modules keep their `use super::*`
+// after moving out of the shell module.
+pub(crate) use crate::service::{AppRequest, SessionPhase};
+pub(crate) use gpui_kit::prelude::*;
+pub(crate) use gpui_kit::*;
+
+pub(crate) use super::shell::{StudioShell, controls, project, sidebar};
+pub(crate) use super::theme;
+pub(crate) use super::widgets::action_assets::ActionIcon;
+pub(crate) use super::widgets::actions::{
+    ActionButton, ButtonVariant, ControlSize, Density, IconButton,
+};
+pub(crate) use crate::ui::observe::TestObserve;
+pub(crate) use graph::graph_canvas::Camera;
 
 /// Which workspace page is active (toolbar tabs).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
