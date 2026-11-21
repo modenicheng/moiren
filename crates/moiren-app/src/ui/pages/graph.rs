@@ -208,19 +208,27 @@ impl StudioShell {
         }
     }
 
-    /// Cancels every in-flight canvas gesture without a pointer event to
-    /// consume it. Lifecycle paths that unmount the canvas or steal the
-    /// pointer (page switch, project load, window deactivation) drop the
-    /// closing mouse-up on the floor; a grab left armed there would paint a
-    /// stale rubber band and pin the DRAG frame demand after the user has
-    /// moved on. Same effect as the canvas's Escape handler.
+    /// Cancels every in-flight gesture without a pointer event to consume
+    /// it: the canvas gestures below plus the mixer-style slider drags
+    /// ([`Self::cancel_active_drags`]). Lifecycle paths that unmount a
+    /// surface or steal the pointer (page switch, project load, window
+    /// deactivation) drop the closing mouse-up on the floor; a canvas grab
+    /// left armed there would paint a stale rubber band and pin the DRAG
+    /// frame demand after the user has moved on, and a slider slot left
+    /// dragging would keep its snapshot write-back suppressed forever — the
+    /// kit delivers the slider's `Release` only through the slider
+    /// element's own mouse-up listeners, so a view that unmounted mid-drag
+    /// never synthesizes one (issue #81). Same effect as the canvas's
+    /// Escape handler.
     pub(crate) fn cancel_active_gesture(&mut self, cx: &mut Context<Self>) {
         // A drag ended without its pointer event still commits: the offset
         // rode the hot layer, so the cards keep where the drag put them,
         // exactly as the per-frame writes used to (audit A-1).
         let committed = self.commit_node_drag();
-        let cancelled =
-            self.drag_active() || committed || self.graph_gestures.background_click.is_some();
+        let cancelled = self.drag_active()
+            || committed
+            || self.graph_gestures.background_click.is_some()
+            || self.cancel_active_drags();
         self.graph_gestures.connection_drag = None;
         self.graph_gestures.pan_grab = None;
         self.graph_gestures.background_click = None;

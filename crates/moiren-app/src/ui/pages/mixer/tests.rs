@@ -660,6 +660,170 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
     finish_service(runtime);
 }
 
+/// Issue #83 (audit HC-5, precondition S-6): the legacy probe flags are a
+/// shared `(bool, bool)` slot, and the issue feared a last-writer-wins
+/// clash between two strips bound to the same device. The service accepts
+/// the duplicate binding into the candidate and rejects it only at apply
+/// time — the fault lands on the sibling strip while the session keeps
+/// running — and the probe mount is keyed by the observed node's identity
+/// (`meter_probe_eligible`), so only the primary strip owns a
+/// flag. Scrolling the sibling completely off-viewport must leave the
+/// visible primary's flag set; scrolling the primary off must release it.
+#[gpui_kit::test]
+fn mixer_probe_flag_survives_a_same_device_sibling_offscreen(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, ServiceRuntime, SessionPhase,
+        SessionSpec,
+    };
+    let backend = crate::service::test_backend::FakeBackend::default();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            gain: 1.,
+            pan: 0.,
+            limit: RunLimit::UntilStopped,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::shell::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let primary = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1024.), px(720.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+
+    // The issue's S-6 precondition, forced through the real service: the
+    // second Source bound to the same endpoint stays in the candidate
+    // (both strips render) while the apply fails on it — a node-aimed
+    // fault on the sibling, session still running.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: NodeKind::Source,
+                channels: 2,
+            }))
+        })
+    });
+    let sibling = crate::ui::shell::test_harness::wait_for(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .filter(|node| node.kind() == NodeKind::Source)
+                .map(|node| node.id())
+                .find(|id| *id != primary)
+        })
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::BindSource {
+                node: sibling,
+                source: InputSelection::Physical {
+                    endpoint_id: "input".into(),
+                },
+            }))
+        })
+    });
+    crate::ui::shell::test_harness::wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            let snapshot = &shell.state.read(cx).snapshot;
+            snapshot.phase == SessionPhase::Running && snapshot.graph.node_faulted(sibling)
+        })
+    });
+
+    // Overflow the channel row and trail the sibling strip at its far
+    // end, beyond the right edge and after the primary in strip order: a
+    // probe mounted there (the regression this pins) would prepaint last
+    // and overwrite the shared flag with false while the primary is still
+    // on screen — exactly the issue's last-writer-wins failure.
+    for _ in 0..6 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                    kind: NodeKind::Gain,
+                    channels: 2,
+                }))
+            })
+        });
+    }
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        let order = &mut shell.mixer.presentation.order;
+        order.retain(|id| *id != sibling);
+        order.push(sibling);
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    view.read_with(cx, |shell, _| {
+        assert_eq!(
+            shell.mixer.presentation.order.last(),
+            Some(&sibling),
+            "the sibling strip must trail the channel row"
+        );
+        assert!(
+            shell.metering.node_meter_points.borrow().contains(&primary),
+            "the primary strip must be on screen and demanded"
+        );
+        assert_eq!(
+            shell.metering.meter_points.get(),
+            (true, true),
+            "a same-device sibling strip beyond the viewport must not clear \
+             the visible strip's probe flag (issue #83)"
+        );
+    });
+
+    // Negative control: the primary's own probe releases once the primary
+    // itself scrolls off the left edge.
+    view.update(cx, |shell, cx| {
+        shell.mixer.scroll.set_offset(point(px(-160.), px(0.)));
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    view.read_with(cx, |shell, _| {
+        assert!(
+            !shell.metering.meter_points.get().0,
+            "scrolling the primary strip off-viewport must release its own probe flag"
+        );
+    });
+    finish_service(runtime);
+}
+
 /// The per-strip split (design 17): a publish that changes one strip's
 /// content rebuilds exactly that strip's panel — its siblings compare their
 /// keys equal and replay their cached paint. Under the whole-page panel this
@@ -1047,6 +1211,101 @@ fn a_paused_fader_drag_lands_its_last_value_at_the_next_frame(cx: &mut TestAppCo
         press + point(px(0.), px(24.)),
         MouseButton::Left,
         Modifiers::default(),
+    );
+    finish_service(runtime);
+}
+
+/// A fader drag whose view unmounts mid-gesture must not pin the write-back
+/// stand-down (issue #81). The kit delivers `SliderEvent::Release` only
+/// through the slider element's own mouse-up listeners, so a strip that
+/// unmounts while the button stays held — here a page switch to Graph —
+/// never sees the closing mouse-up and nothing synthesizes a Release for it.
+/// `SliderSlot.dragging` then sticks true: the snapshot write-back in
+/// `sync_slider_range` stays suppressed, the thumb freezes at the drag value
+/// and edits to the same gain from other surfaces stop following the strip,
+/// until the user drags that fader again. The page switch must cancel the
+/// drag exactly as it cancels canvas gestures.
+#[gpui_kit::test]
+fn a_fader_drag_interrupted_by_a_page_switch_reopens_the_write_back(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for travel in [12., 24.] {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(travel)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.read_with(cx, |shell, _| {
+        assert!(
+            shell.mixer.presentation.faders[&node].dragging.get(),
+            "the drag must be in flight before the page switch"
+        );
+    });
+    // Switch pages while the button stays held: the strip unmounts, and the
+    // kit's element-scoped release listeners unmount with it.
+    view.update(cx, |shell, cx| shell.set_page(Page::Graph, cx));
+    cx.update(|window, cx| window.render_frame(cx));
+    // The closing mouse-up lands wherever the pointer now is — the Graph
+    // page. The slot must not keep its drag armed: nothing else can clear
+    // the flag, and the write-back stays suppressed across every page.
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+    });
+    view.read_with(cx, |shell, _| {
+        assert!(
+            !shell.mixer.presentation.faders[&node].dragging.get(),
+            "a drag whose view unmounted must not keep the write-back suppressed"
+        );
+    });
+    // Back on the Mixer, the strip must follow the snapshot again: an edit
+    // through the service (the tray flyout and inspector paths edit the same
+    // gain this way) moves the thumb once the write-back reopened.
+    view.update(cx, |shell, cx| shell.set_page(Page::Mixer, cx));
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(node, |mixer| mixer.gain = 0.25)
+        });
+    });
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb, expected) = view.read_with(cx, |shell, cx| {
+        (
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+            1. - FaderScale::position(0.25),
+        )
+    });
+    assert!(
+        (thumb - expected).abs() < 0.0001,
+        "the thumb must follow the published gain again, got {thumb} vs {expected}"
     );
     finish_service(runtime);
 }

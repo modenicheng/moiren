@@ -3,6 +3,7 @@
 
 use super::{Editor, Section};
 use crate::ui::shell::StudioShell;
+use crate::ui::shell::project::ProjectMessage;
 use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell};
 use crate::ui::widgets::actions::Density;
 use gpui_kit::test::TestWindowExt;
@@ -220,6 +221,167 @@ fn settings_scroll_viewport_fits_the_page_and_scrolls_actions_into_view(cx: &mut
     assert!(
         save.origin.y >= viewport.origin.y && save.origin.y + save.size.height <= page_bottom,
         "the scrolled-to-end actions must sit inside the viewport, got {save:?}"
+    );
+    finish_service(runtime);
+}
+
+/// No viewport size rides the key: the cached page fills the workspace
+/// through a live flex wrapper, and gpui-fast builds a cached view again
+/// when its allocated bounds change (a measurement that no longer stands).
+/// So resizing while open must move the painted page — the old fixed-height
+/// dialog froze instead (#82) — rebuilding the cached view at most once per
+/// resize, never per frame, and the scroll viewport (the hit rect) must end
+/// where the painted page ends.
+#[gpui_kit::test]
+fn settings_panel_tracks_viewport_height_changes_while_open(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(900.)));
+    open_settings(cx);
+    let tall = cx.update(|window, _| window.find("settings-page").bounds());
+    let tall_viewport = cx.update(|window, _| window.find("settings-scroll").bounds());
+    assert_eq!(
+        tall_viewport.origin.y + tall_viewport.size.height,
+        tall.origin.y + tall.size.height,
+        "the scroll viewport must end at the page's bottom"
+    );
+    let before = settings_rebuilds(&view, cx);
+
+    // Shorten the window while the page is open: the paint must follow the
+    // live wrapper, and the bounds-change rebuild is bounded to one.
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(640.)));
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let short = cx.update(|window, _| window.find("settings-page").bounds());
+    assert_eq!(
+        tall.size.height - short.size.height,
+        gpui_kit::px(260.),
+        "the painted page height must track the viewport"
+    );
+    let after_shrink = settings_rebuilds(&view, cx);
+    assert!(
+        after_shrink <= before + 1,
+        "one resize must rebuild the cached page at most once ({before} -> {after_shrink})"
+    );
+    let short_viewport = cx.update(|window, _| window.find("settings-scroll").bounds());
+    assert_eq!(
+        short_viewport.origin.y + short_viewport.size.height,
+        short.origin.y + short.size.height,
+        "the scroll viewport must end at the new page bottom — the hit rect and the paint agree"
+    );
+    // With the window held still, the new size replays: no further rebuilds.
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        settings_rebuilds(&view, cx),
+        after_shrink,
+        "a key-neutral notification at the settled size must replay the cached paint"
+    );
+
+    // Growing back tracks the same way.
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(900.)));
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    let restored = cx.update(|window, _| window.find("settings-page").bounds());
+    assert_eq!(
+        restored.size.height, tall.size.height,
+        "the painted page height must track the viewport back up"
+    );
+    let after_grow = settings_rebuilds(&view, cx);
+    assert!(
+        after_grow <= after_shrink + 1,
+        "the grow-back resize must also rebuild at most once ({after_shrink} -> {after_grow})"
+    );
+    finish_service(runtime);
+}
+
+/// `pending_request` and `project_message` change with no publish behind
+/// them (a dispatch in flight, a quiet save finishing), and the Diagnostics
+/// card renders both. Each rides the key (#82), so each flip must rebuild
+/// the page exactly once and move the painted sentence, while a key-neutral
+/// notification still replays the cache.
+#[gpui_kit::test]
+fn settings_panel_repaints_pending_request_and_project_message_changes(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1440.), gpui_kit::px(900.)));
+    open_settings(cx);
+    // Mirrors the nav item click: a section write plus a plain notify.
+    view.update(cx, |shell, cx| {
+        shell.settings.editor.section = Section::Diagnostics;
+        cx.notify();
+    });
+    cached_frame(cx);
+    let idle_feedback = cx.update(|window, _| {
+        window
+            .find("settings-control-feedback")
+            .label()
+            .map(str::to_owned)
+    });
+    assert_ne!(
+        idle_feedback.as_deref(),
+        Some("Applying changes..."),
+        "an idle session paints no pending sentence"
+    );
+    assert!(
+        cx.update(|window, _| window.try_find("settings-project-message").is_none()),
+        "a fresh session paints no project message"
+    );
+    let before = settings_rebuilds(&view, cx);
+
+    // A parameter request is dispatched and nothing publishes behind it:
+    // the flip reaches the page through the key alone (the `edit`
+    // helper's state-update-plus-notify shape).
+    view.update(cx, |shell, cx| {
+        shell
+            .state
+            .update(cx, |state, _| state.pending_request = true);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        settings_rebuilds(&view, cx),
+        before + 1,
+        "the pending-request flip must rebuild the page exactly once"
+    );
+    assert_eq!(
+        cx.update(|window, _| {
+            window
+                .find("settings-control-feedback")
+                .label()
+                .map(str::to_owned)
+        }),
+        Some("Applying changes...".to_owned()),
+        "the repaint must show the pending sentence"
+    );
+
+    // The quiet save chain reports through the project message the same
+    // way: no publish, key field, one rebuild.
+    view.update(cx, |shell, cx| {
+        shell.project_io.message = Some(ProjectMessage::Saved);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert_eq!(
+        settings_rebuilds(&view, cx),
+        before + 2,
+        "the project message must rebuild the page exactly once"
+    );
+    assert_eq!(
+        cx.update(|window, _| {
+            window
+                .find("settings-project-message")
+                .label()
+                .map(str::to_owned)
+        }),
+        Some("Project saved".to_owned()),
+        "the repaint must show the saved sentence"
+    );
+
+    view.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert_eq!(
+        settings_rebuilds(&view, cx),
+        before + 2,
+        "a key-neutral notification must replay the cached paint"
     );
     finish_service(runtime);
 }

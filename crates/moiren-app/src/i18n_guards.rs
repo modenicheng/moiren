@@ -696,7 +696,10 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 /// families:
 /// - fault cause/hint strings raised by the service, graph preparation and
 ///   driver layers and translated at paint via `t!(fault.cause.as_str())` /
-///   `t!(hint)` (shell/fault_popover.rs, graph_canvas_view/nodes.rs);
+///   `t!(hint)` (shell/fault_popover.rs, graph_canvas_view/nodes.rs),
+///   including the closed-enum cause keys produced by
+///   `src/service/fault_causes.rs` (issue #86: signal-bus registration
+///   failures and engine diagnostic kinds);
 /// - display-name registries translated at paint from `&'static str`
 ///   accessors: page titles, node catalog titles/descriptions/groups,
 ///   window-control labels, latency-profile titles/descriptions, backend /
@@ -706,7 +709,7 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 113] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 133] = [
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -724,8 +727,11 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 113] = [
     "ASIO",
     "Adjust linear amplitude",
     "Adjust the channel count, or reconnect the route",
+    "An audio device is absent or was removed",
+    "An audio resource is temporarily unavailable",
     "Application audio",
     "Attack",
+    "Audio preparation was cancelled",
     "Balanced",
     "Bus dynamic input ports",
     "Channel parameters are outside their valid range",
@@ -791,6 +797,17 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 113] = [
     "Request ~10 ms device buffers (512 frames at 48 kHz).",
     "Request ~5 ms device buffers (256 frames at 48 kHz).",
     "SOURCES",
+    "Spectrum analyzer streams could not be re-registered: the previous topic belongs to another bus",
+    "Spectrum analyzer streams could not be re-registered: the previous topic is closed",
+    "Spectrum analyzer streams could not be re-registered: the previous topic still has a publisher binding or outstanding leases",
+    "Spectrum analyzer streams could not be registered: bus byte budget exceeded",
+    "Spectrum analyzer streams could not be registered: duplicate topic name",
+    "Spectrum analyzer streams could not be registered: identity generation exhausted",
+    "Spectrum analyzer streams could not be registered: invalid capacity or bus configuration",
+    "Spectrum analyzer streams could not be registered: invalid topic name",
+    "Spectrum analyzer streams could not be registered: publication payload too large",
+    "Spectrum analyzer streams could not be registered: storage layout overflow",
+    "Spectrum analyzer streams could not be registered: topic limit reached",
     "Static channel routing matrix",
     "Stereo balance, mono and swap",
     "The Balance node's position must be a finite value in -1..1",
@@ -799,6 +816,12 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 113] = [
     "The Source node is not bound to an input source",
     "The application source is missing a stable process identity",
     "The apply request identity space is exhausted",
+    "The audio backend does not support this configuration",
+    "The audio backend failed",
+    "The audio backend worker crashed",
+    "The audio engine rejected the routing plan",
+    "The audio engine reported an internal fault",
+    "The audio session is waiting for an audio device or resource",
     "The channel's channel count disagrees with its wiring",
     "The channel's configuration does not match its kind",
     "The configuration points at a channel that no longer exists",

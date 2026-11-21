@@ -4,6 +4,7 @@
 mod backend;
 mod core;
 mod exports;
+mod fault_causes;
 mod graph;
 mod jobs;
 #[cfg(test)]

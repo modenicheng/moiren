@@ -565,7 +565,9 @@ impl StudioShell {
         })
         .detach();
         // Alt+Tab (or any focus steal) mid-gesture loses the mouse-up, and a
-        // grab armed on an inactive window stays armed: cancel on
+        // grab armed on an inactive window stays armed — a canvas gesture
+        // pinned on the frame loop, or a slider drag whose write-back
+        // stand-down would outlive the window switch (issue #81). Cancel on
         // deactivation, since the platform will never complete the stroke.
         // Registration fires this once immediately; with no gesture in
         // flight the cancel is a no-op.
@@ -777,9 +779,12 @@ impl StudioShell {
     }
 
     pub(crate) fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
-        // Switching unmounts the canvas, so an in-flight gesture never sees
-        // its closing mouse-up (the new page's background has no canvas
-        // handlers); cancel it here or it stays armed across pages.
+        // Switching unmounts the page, so an in-flight gesture never sees
+        // its closing mouse-up (the new page's background has none of the
+        // old handlers); cancel it here or it stays armed across pages.
+        // The strip faders and their slider slots follow the same rule: a
+        // drag left dragging would keep its write-back suppressed after the
+        // switch (issue #81).
         self.cancel_active_gesture(cx);
         // Selecting a tab also leaves the Settings page: the tab strip stays
         // clickable while Settings shows, and a click switches away from it.
@@ -1114,14 +1119,22 @@ impl StudioShell {
             .chain(self.inspector.compressor.sliders.values())
     }
 
-    /// Cancels every in-flight slider drag so a journal step cannot be
-    /// overwritten by its gesture (audit SD-7).
-    fn cancel_active_drags(&self) {
+    /// Cancels every in-flight slider drag: a journal step landing under a
+    /// live drag (audit SD-7), and — through
+    /// [`Self::cancel_active_gesture`] — every lifecycle path that drops
+    /// the drag's closing mouse-up (page switch, window deactivation),
+    /// where the stuck `dragging` flag would suppress the snapshot
+    /// write-back forever (issue #81). Returns whether any drag was in
+    /// flight, so the caller can fold that into its notify decision.
+    pub(crate) fn cancel_active_drags(&self) -> bool {
+        let mut cancelled = false;
         for slot in self.slider_slots() {
             if slot.dragging.get() {
                 slot.cancel_drag();
+                cancelled = true;
             }
         }
+        cancelled
     }
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and

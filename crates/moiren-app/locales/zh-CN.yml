@@ -1488,6 +1488,66 @@ _version: 2
 "Parameters are outside their valid range":
   en: "Parameters are outside their valid range"
   zh-CN: "参数超出有效范围"
+"Spectrum analyzer streams could not be registered: bus byte budget exceeded":
+  en: "Spectrum analyzer streams could not be registered: bus byte budget exceeded"
+  zh-CN: "无法注册频谱分析器数据流：超出总线字节预算"
+"Spectrum analyzer streams could not be registered: duplicate topic name":
+  en: "Spectrum analyzer streams could not be registered: duplicate topic name"
+  zh-CN: "无法注册频谱分析器数据流：主题名称重复"
+"Spectrum analyzer streams could not be registered: identity generation exhausted":
+  en: "Spectrum analyzer streams could not be registered: identity generation exhausted"
+  zh-CN: "无法注册频谱分析器数据流：标识代号已耗尽"
+"Spectrum analyzer streams could not be registered: invalid capacity or bus configuration":
+  en: "Spectrum analyzer streams could not be registered: invalid capacity or bus configuration"
+  zh-CN: "无法注册频谱分析器数据流：容量或总线配置无效"
+"Spectrum analyzer streams could not be registered: invalid topic name":
+  en: "Spectrum analyzer streams could not be registered: invalid topic name"
+  zh-CN: "无法注册频谱分析器数据流：主题名称无效"
+"Spectrum analyzer streams could not be registered: publication payload too large":
+  en: "Spectrum analyzer streams could not be registered: publication payload too large"
+  zh-CN: "无法注册频谱分析器数据流：单次发布载荷过大"
+"Spectrum analyzer streams could not be registered: storage layout overflow":
+  en: "Spectrum analyzer streams could not be registered: storage layout overflow"
+  zh-CN: "无法注册频谱分析器数据流：存储布局溢出"
+"Spectrum analyzer streams could not be registered: topic limit reached":
+  en: "Spectrum analyzer streams could not be registered: topic limit reached"
+  zh-CN: "无法注册频谱分析器数据流：已达主题数量上限"
+"Spectrum analyzer streams could not be re-registered: the previous topic belongs to another bus":
+  en: "Spectrum analyzer streams could not be re-registered: the previous topic belongs to another bus"
+  zh-CN: "无法重新注册频谱分析器数据流：旧主题属于其他总线"
+"Spectrum analyzer streams could not be re-registered: the previous topic is closed":
+  en: "Spectrum analyzer streams could not be re-registered: the previous topic is closed"
+  zh-CN: "无法重新注册频谱分析器数据流：旧主题已关闭"
+"Spectrum analyzer streams could not be re-registered: the previous topic still has a publisher binding or outstanding leases":
+  en: "Spectrum analyzer streams could not be re-registered: the previous topic still has a publisher binding or outstanding leases"
+  zh-CN: "无法重新注册频谱分析器数据流：旧主题仍有发布者绑定或未释放的租约"
+"An audio resource is temporarily unavailable":
+  en: "An audio resource is temporarily unavailable"
+  zh-CN: "音频资源暂时不可用"
+"An audio device is absent or was removed":
+  en: "An audio device is absent or was removed"
+  zh-CN: "音频设备已缺失或被移除"
+"Audio preparation was cancelled":
+  en: "Audio preparation was cancelled"
+  zh-CN: "音频准备已取消"
+"The audio backend does not support this configuration":
+  en: "The audio backend does not support this configuration"
+  zh-CN: "音频后端不支持此配置"
+"The audio backend failed":
+  en: "The audio backend failed"
+  zh-CN: "音频后端出现故障"
+"The audio backend worker crashed":
+  en: "The audio backend worker crashed"
+  zh-CN: "音频后端工作线程已崩溃"
+"The audio engine rejected the routing plan":
+  en: "The audio engine rejected the routing plan"
+  zh-CN: "音频引擎拒绝了路由方案"
+"The audio engine reported an internal fault":
+  en: "The audio engine reported an internal fault"
+  zh-CN: "音频引擎报告了内部故障"
+"The audio session is waiting for an audio device or resource":
+  en: "The audio session is waiting for an audio device or resource"
+  zh-CN: "音频会话正在等待音频设备或资源"
 
 "Interface":
   en: Interface
