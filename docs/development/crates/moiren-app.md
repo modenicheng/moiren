@@ -18,7 +18,7 @@ The desktop application: application service (candidate graph, `EngineHost` driv
 ## Contracts
 
 - The candidate graph is the single routing truth; runtime facts come from engine observations. Show requested → accepted → applied truthfully, use Unknown/`—` instead of fake zeros, and never relabel candidate config as active.
-- All user-facing strings go through `t!`; the key set in `locales/zh-CN.yml` is authoritative, and `tests/i18n_ledger.rs` plus `src/i18n_guards.rs` fail on drift. Keep `%{placeholder}` sets identical; audio abbreviations stay English.
+- All user-facing strings go through `t!`; the key set in `locales/zh-CN.yml` is authoritative, and `tests/i18n_ledger.rs` plus `src/i18n_guards.rs` fail on drift. Keep `%{placeholder}` sets identical; audio abbreviations stay English. Service-side fault causes are catalog keys too: closed error enums map variant-by-variant in `src/service/fault_causes.rs` (payloads stay in the service log), and the same guards list those keys.
 - UI must not allocate, reclaim, or block on audio threads; graph/buffer/signal binding and retired-plan reclamation stay on the control side. Subscribe only to visible nodes and release subscriptions when hidden or off-screen.
 - Structural edits debounce and rebuild atomically; a failed rebuild keeps the old graph running. Parameter edits should use the realtime parameter channel where possible.
 - Tests that construct the shell directly must clear `shell.autosave.path` and `shell.preferences.path` (the shared harness does), otherwise a dirty test graph can overwrite the developer's real `%APPDATA%\Moiren` autosave (audit AS-2/AS-3). Prefer `test_shell`/`shell_with_state`, and never open a real audio device in tests.

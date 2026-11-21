@@ -220,6 +220,33 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "The live parameter queue is busy; the candidate value is kept",
     "The apply request identity space is exhausted",
     "No native audio backend is configured",
+    // Closed-enum fault-cause keys produced by the mappings in
+    // src/service/fault_causes.rs (issue #86): signal-bus topic
+    // registration failures (RegisterError/UnregisterError via
+    // service/signals.rs -> managed/meters.rs record_error), engine
+    // Diagnostic kinds and the undiagnosed resource wait
+    // (managed/driver/observations.rs -> session error / preparation
+    // faults). Mirrored in src/i18n_guards.rs DYNAMIC_KEY_EXCEPTIONS.
+    "Spectrum analyzer streams could not be registered: invalid topic name",
+    "Spectrum analyzer streams could not be registered: invalid capacity or bus configuration",
+    "Spectrum analyzer streams could not be registered: storage layout overflow",
+    "Spectrum analyzer streams could not be registered: bus byte budget exceeded",
+    "Spectrum analyzer streams could not be registered: topic limit reached",
+    "Spectrum analyzer streams could not be registered: duplicate topic name",
+    "Spectrum analyzer streams could not be registered: identity generation exhausted",
+    "Spectrum analyzer streams could not be registered: publication payload too large",
+    "Spectrum analyzer streams could not be re-registered: the previous topic still has a publisher binding or outstanding leases",
+    "Spectrum analyzer streams could not be re-registered: the previous topic is closed",
+    "Spectrum analyzer streams could not be re-registered: the previous topic belongs to another bus",
+    "An audio resource is temporarily unavailable",
+    "An audio device is absent or was removed",
+    "The audio backend does not support this configuration",
+    "The audio backend failed",
+    "Audio preparation was cancelled",
+    "The audio backend worker crashed",
+    "The audio engine rejected the routing plan",
+    "The audio engine reported an internal fault",
+    "The audio session is waiting for an audio device or resource",
     // Stored audio-settings validation failures: `UiFailure::InvalidAudioSettings`
     // renders the `AudioConfigError` Display string in src/ui/presentation.rs.
     "sample rate must be 44.1, 48, 88.2 or 96 kHz",
