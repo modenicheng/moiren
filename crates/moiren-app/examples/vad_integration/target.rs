@@ -208,6 +208,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             "Signal headers prove Engine timeline advances; AppSnapshot.elapsed is wall time only and is not used.",
             "Native identity is root parent plus stable ID plus flow; this probe never opens a ControlClient or PcmOwner.",
             "Public native stamps correlate sampled stream advances with gate transitions; intermediate native states and external client counts are not observable.",
+            "Failed ACTIVE identity selection records the existing enumerator's ALL-state snapshot and a later fresh ACTIVE topology observation within the work deadline. Later matches are diagnostic.",
             "Running-phase re-admission is bounded to 5s and the existing phase deadline; gate epoch alone never permits closure.",
             "Gate transition timestamps are sampled monotonic wall times, not Engine progress. Intentional Stop/exit gate closures are separate checkpoints.",
             "Known PCM and Stop silence are bounded observations, not long stress/Verifier/release qualification.",

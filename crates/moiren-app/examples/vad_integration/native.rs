@@ -288,8 +288,9 @@ impl Pair {
                 .collect();
             // Both flows share one additional scheduling budget, never two
             // independent extensions of the original case work deadline.
-            let deadline = diagnostic_deadline.min(Instant::now() + Duration::from_secs(1));
-            super::rename::enumeration::collect_routes(
+            let failed_at = Instant::now();
+            let deadline = diagnostic_deadline.min(failed_at + Duration::from_secs(1));
+            let mut evidence = super::rename::enumeration::collect_routes(
                 pending,
                 |index| {
                     let (stable, intent) = routes[index];
@@ -297,6 +298,16 @@ impl Pair {
                 },
                 &mut publish,
             );
+            // Keep the original failure and ALL-state snapshot first. A
+            // later match can also reflect publication progress, so record
+            // timing and leave failed admission untouched.
+            let deadline = diagnostic_deadline.min(Instant::now() + Duration::from_millis(500));
+            for (index, (stable, intent)) in routes.into_iter().enumerate() {
+                evidence[index].fresh_active = Some(enumeration::recheck_active(
+                    stable, intent, root, failed_at, deadline,
+                ));
+                publish(evidence.clone());
+            }
         })
     }
 

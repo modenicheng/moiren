@@ -1,9 +1,12 @@
 //! One bounded ALL-state snapshot after an ACTIVE enumeration failure.
 use super::*;
-use crate::rename::enumeration::{Endpoint, Failure, Identity, Read, budgeted, collect_endpoints};
+use crate::rename::enumeration::{
+    ActiveIdentityLookup, Endpoint, Failure, FreshActiveObservation, Identity, Read, budgeted,
+    collect_endpoints,
+};
 use windows::Win32::{
     Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-    Media::Audio::{DEVICE_STATE, DEVICE_STATEMASK_ALL, eCapture, eRender},
+    Media::Audio::{DEVICE_STATE, DEVICE_STATE_ACTIVE, DEVICE_STATEMASK_ALL, eCapture, eRender},
 };
 
 fn read<T>(stage: &'static str, result: anyhow::Result<T>) -> Read<T> {
@@ -41,6 +44,80 @@ pub(super) fn pending(
         truncated: false,
         collection_completed: false,
         endpoints: Vec::new(),
+        fresh_active: None,
+    }
+}
+
+pub(super) fn recheck_active(
+    stable: StableEndpointId,
+    intent: Intent,
+    root: &str,
+    failed_at: Instant,
+    deadline: Instant,
+) -> FreshActiveObservation {
+    let started = Instant::now();
+    let stage = "fresh ACTIVE topology identity";
+    let lookup = budgeted(
+        stage,
+        || started < deadline,
+        || {
+            read(
+                stage,
+                (|| {
+                    // SAFETY: this failure-only observer stays in the same COM
+                    // apartment and only retrieves endpoint metadata.
+                    let enumerator: IMMDeviceEnumerator =
+                        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+                    ensure!(Instant::now() < deadline, "fresh identity budget expired");
+                    let flow = if intent == Intent::Playback {
+                        eRender
+                    } else {
+                        eCapture
+                    };
+                    let devices =
+                        unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)? };
+                    ensure!(Instant::now() < deadline, "fresh identity budget expired");
+                    let count = unsafe { devices.GetCount()? };
+                    let (rows, truncated, error) = collect_endpoints(
+                        count,
+                        || Instant::now() < deadline,
+                        |index| {
+                            let endpoint = unsafe { devices.Item(index)? };
+                            Ok(identity::candidate(&enumerator, &endpoint, intent))
+                        },
+                    );
+                    if let Some(error) = error {
+                        return Err(error);
+                    }
+                    ensure!(
+                        !truncated && Instant::now() < deadline,
+                        "fresh ACTIVE scan incomplete"
+                    );
+                    let mut candidates = Vec::new();
+                    let mut topology_errors = Vec::new();
+                    for (index, row) in rows.into_iter().enumerate() {
+                        match row {
+                            Ok(candidate) => candidates.push(candidate),
+                            Err(error) if topology_errors.len() < 8 => {
+                                topology_errors.push(format!("index={index}: {error:#}"));
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                    let exact = validation::select(&candidates, stable, intent, root)?;
+                    Ok(ActiveIdentityLookup {
+                        active_endpoints: count,
+                        exact_mmdevice_id: exact.map(|row| row.id.clone()),
+                        topology_errors,
+                    })
+                })(),
+            )
+        },
+    );
+    FreshActiveObservation {
+        started_after_failure_ms: started.saturating_duration_since(failed_at).as_millis(),
+        elapsed_ms: started.elapsed().as_millis(),
+        lookup,
     }
 }
 

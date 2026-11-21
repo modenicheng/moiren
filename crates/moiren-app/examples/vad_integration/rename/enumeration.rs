@@ -40,6 +40,20 @@ pub(crate) struct Endpoint {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(crate) struct ActiveIdentityLookup {
+    pub active_endpoints: u32,
+    pub exact_mmdevice_id: Option<String>,
+    pub topology_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct FreshActiveObservation {
+    pub started_after_failure_ms: u128,
+    pub elapsed_ms: u128,
+    pub lookup: Read<ActiveIdentityLookup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct Failure {
     pub original_error: String,
     pub direction: String,
@@ -52,6 +66,8 @@ pub(crate) struct Failure {
     pub truncated: bool,
     pub collection_completed: bool,
     pub endpoints: Vec<Endpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fresh_active: Option<FreshActiveObservation>,
 }
 
 pub(crate) fn retain_failure<T>(
@@ -109,13 +125,14 @@ pub(crate) fn collect_routes(
     mut values: Vec<Failure>,
     mut collect: impl FnMut(usize) -> Failure,
     mut publish: impl FnMut(Vec<Failure>),
-) {
+) -> Vec<Failure> {
     publish(values.clone());
     for index in 0..values.len() {
         values[index] = collect(index);
         // A later flow stall cannot erase an already collected earlier flow.
         publish(values.clone());
     }
+    values
 }
 
 #[cfg(test)]
@@ -139,6 +156,7 @@ mod tests {
             truncated: false,
             collection_completed: false,
             endpoints: Vec::new(),
+            fresh_active: None,
         }
     }
 
@@ -149,7 +167,21 @@ mod tests {
             || Err(anyhow::anyhow!("original topology error").context("enumeration timed out")),
             failure,
             |value| evidence = Some(value),
-            failure,
+            |error| {
+                let mut value = failure(error);
+                value.fresh_active = Some(FreshActiveObservation {
+                    started_after_failure_ms: 7,
+                    elapsed_ms: 1,
+                    lookup: Read::Value {
+                        value: ActiveIdentityLookup {
+                            active_endpoints: 3,
+                            exact_mmdevice_id: Some("later-owned-device".into()),
+                            topology_errors: Vec::new(),
+                        },
+                    },
+                });
+                value
+            },
         );
         let original = "enumeration timed out: original topology error";
         assert_eq!(format!("{:#}", result.unwrap_err()), original);
@@ -157,6 +189,12 @@ mod tests {
         assert_eq!(evidence.original_error, original);
         assert!(evidence.collection_error.is_some());
         assert!(evidence.endpoints.is_empty());
+        let json = serde_json::to_value(evidence).unwrap();
+        assert_eq!(json["fresh_active"]["started_after_failure_ms"], 7);
+        assert_eq!(
+            json["fresh_active"]["lookup"]["value"]["exact_mmdevice_id"],
+            "later-owned-device",
+        );
     }
 
     #[test]
