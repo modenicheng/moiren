@@ -7,6 +7,7 @@ fn pcm_route(current: &RuntimeEvidence) -> crate::report::Evidence {
 
     Evidence {
         phase: current.phase.clone(),
+        generation: 1,
         candidate_revision: current.candidate_revision,
         active_revision: current.active_revision,
         pending_revision: current.pending_revision,

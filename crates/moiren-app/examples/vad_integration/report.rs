@@ -37,6 +37,8 @@ pub(super) struct Report {
     pub gate_transitions: Vec<super::validation::GateProgress>,
     pub service_joined: bool,
     pub control_session_released: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_cleanup: Option<OwnerCleanupEvidence>,
     pub endpoint_absence_confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_capture: Option<InputCaptureExport>,
@@ -56,6 +58,65 @@ pub(super) struct ProbeTrail {
     pub microphone_silent_frames: Option<u64>,
     pub playback_native_callbacks: Option<u64>,
     pub microphone_native_callbacks: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct OwnerCleanupEvidence {
+    pub generation: u64,
+    pub host_closed: bool,
+    pub fault: Option<String>,
+    pub error: Option<String>,
+}
+
+#[cfg(windows)]
+impl From<&moiren_app::service::SessionCleanupObservation> for OwnerCleanupEvidence {
+    fn from(observation: &moiren_app::service::SessionCleanupObservation) -> Self {
+        Self {
+            generation: observation.generation.0,
+            host_closed: observation.state.host == moiren_engine::host::HostState::Closed,
+            fault: observation
+                .state
+                .fault
+                .as_ref()
+                .map(|fault| format!("{fault:?}")),
+            error: observation
+                .state
+                .cleanup_error
+                .as_ref()
+                .map(ToString::to_string),
+        }
+    }
+}
+
+pub(super) fn exit_cleanup_error(
+    lifecycle_confirmed: bool,
+    expected_generation: Option<u64>,
+    owner: Option<&OwnerCleanupEvidence>,
+) -> Option<String> {
+    if !lifecycle_confirmed {
+        return Some(
+            "service exited, but public lifecycle evidence did not confirm removal requested/closed gates".into(),
+        );
+    }
+    let expected = expected_generation?;
+    let Some(owner) = owner else {
+        return Some(format!(
+            "missing cleanup for audio owner generation {expected}"
+        ));
+    };
+    if owner.generation != expected {
+        return Some(format!(
+            "audio owner cleanup generation {} differs from confirmed generation {expected}",
+            owner.generation,
+        ));
+    }
+    if !owner.host_closed || owner.fault.is_some() || owner.error.is_some() {
+        return Some(format!(
+            "audio owner cleanup failed for generation {expected}, host_closed={}, fault={:?}, error={:?}",
+            owner.host_closed, owner.fault, owner.error,
+        ));
+    }
+    None
 }
 
 impl Default for Report {
@@ -84,6 +145,7 @@ impl Default for Report {
             gate_transitions: Vec::new(),
             service_joined: false,
             control_session_released: false,
+            owner_cleanup: None,
             endpoint_absence_confirmed: false,
             input_capture: None,
             checkpoints: Vec::new(),
@@ -214,6 +276,7 @@ impl From<&ExportStatus> for ExportEvidence {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct Evidence {
     pub phase: String,
+    pub generation: u64,
     pub candidate_revision: u64,
     pub active_revision: Option<u64>,
     pub pending_revision: Option<u64>,
@@ -336,6 +399,7 @@ impl From<&moiren_app::service::AppSnapshot> for Evidence {
     fn from(snapshot: &moiren_app::service::AppSnapshot) -> Self {
         Self {
             phase: format!("{:?}", snapshot.phase).to_ascii_lowercase(),
+            generation: snapshot.generation.0,
             candidate_revision: snapshot.graph.candidate_revision,
             active_revision: snapshot.graph.active_revision,
             pending_revision: snapshot.graph.pending_revision,
@@ -358,6 +422,7 @@ mod tests {
     fn running() -> Evidence {
         Evidence {
             phase: "running".into(),
+            generation: 1,
             candidate_revision: 7,
             active_revision: Some(7),
             pending_revision: None,
@@ -519,6 +584,30 @@ mod tests {
             }
             assert!(!exited.exited(), "cleanup error was reported as clean exit");
         }
+    }
+
+    #[test]
+    fn continuous_exit_requires_cleanup_of_the_confirmed_owner() {
+        let mut owner = OwnerCleanupEvidence {
+            generation: 5,
+            host_closed: true,
+            fault: None,
+            error: None,
+        };
+        assert!(exit_cleanup_error(true, None, None).is_none());
+        assert!(exit_cleanup_error(false, Some(5), Some(&owner)).is_some());
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_none());
+        assert!(exit_cleanup_error(true, Some(5), None).is_some());
+        assert!(exit_cleanup_error(true, Some(7), Some(&owner)).is_some());
+        owner.host_closed = false;
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_some());
+        owner.host_closed = true;
+        owner.fault = Some("native owner failure".into());
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_some());
+        owner.fault = None;
+        owner.error = Some("PCM shutdown HRESULT=0x8007051A".into());
+        let error = exit_cleanup_error(true, Some(5), Some(&owner)).unwrap();
+        assert!(error.contains("0x8007051A"), "{error}");
     }
 
     #[test]

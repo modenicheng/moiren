@@ -228,6 +228,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         }
     }
     let mut runtime = None;
+    let mut expected_owner_generation = None;
     let mut input_capture = None;
     if let Some(frames) = options.input_capture_frames {
         report.input_capture = Some(super::report::InputCaptureExport {
@@ -367,6 +368,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             );
         }
         if pcm || options.soaking() {
+            expected_owner_generation = Some(running.generation);
             let session = LiveSession {
                 handle: &handle,
                 ids: &ids,
@@ -466,10 +468,17 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                 Ok(()) => {
                     report.service_joined = true;
                     report.control_session_released = true;
-                    cleanup_ok = evidence.exited();
-                    if !cleanup_ok {
-                        report.cleanup_error = Some("service exited, but public lifecycle evidence did not confirm removal requested/closed gates".into());
+                    if expected_owner_generation.is_some() {
+                        report.owner_cleanup = handle
+                            .try_snapshot()
+                            .and_then(|snapshot| snapshot.last_cleanup.as_ref().map(Into::into));
                     }
+                    report.cleanup_error = super::report::exit_cleanup_error(
+                        evidence.exited(),
+                        expected_owner_generation,
+                        report.owner_cleanup.as_ref(),
+                    );
+                    cleanup_ok = report.cleanup_error.is_none();
                 }
                 Err(error) => report.cleanup_error = Some(format!("service join: {error:?}")),
             },
