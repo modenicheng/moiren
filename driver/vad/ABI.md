@@ -89,5 +89,8 @@ IN_DIRECT payload; READ returns the header plus data. Map MDLs only on submissio
 
 Closing a gate revokes queued data without destroying the native stream. Native
 stream reopen, resume and scheduling discontinuity invalidate old epochs; owners
-refresh snapshots and rebuild prepared transport state. Zero clients, zero PCM,
+refresh snapshots and rebuild prepared transport state. A dequeued PCM request
+that was admitted before this same endpoint advanced its stream or gate epoch
+completes with `STATUS_CANCELLED` and zero bytes. PCM submitted with a stale
+stamp still fails admission with `STATUS_REVISION_MISMATCH`. Zero clients, zero PCM,
 queue pressure and rejected stale work do not authorize physical-owner recovery.

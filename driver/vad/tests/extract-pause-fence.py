@@ -33,7 +33,7 @@ for relative, functions in (
             ("LifecycleGuard", r"class\s+LifecycleGuard\s*\{"),
         )) + ";\n")
     patterns = tuple(
-        (name, r"(?:static\s+)?(?:VAD_PAGE\s+)?(?:void|NTSTATUS|PVOID|ULONG)\s+" +
+        (name, r"(?:static\s+)?(?:VAD_PAGE\s+)?(?:bool|void|NTSTATUS|PVOID|ULONG)\s+" +
          name + r"\s*\([^;{}]*\)\s*\{")
         for name in functions
     )

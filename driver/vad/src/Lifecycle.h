@@ -167,6 +167,16 @@ inline bool SameStream(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
         slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
 }
 
+inline bool RetiredPcmAdmission(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
+{
+    return slot.Id != 0 && slot.Id == request.EndpointId &&
+        slot.Id == request.EndpointGeneration && slot.Session == request.SessionEpoch &&
+        slot.StreamGeneration >= request.StreamGeneration &&
+        slot.AdmissionGeneration >= request.GateEpoch &&
+        (slot.StreamGeneration > request.StreamGeneration ||
+            slot.AdmissionGeneration > request.GateEpoch);
+}
+
 // PCM may be queued after gate admission but before ACX calls Run. Keeping
 // this admission predicate separate from SameStream lets the transfer path
 // remain strict: a request parked during Paused becomes useful only after the

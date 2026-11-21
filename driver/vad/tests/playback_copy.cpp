@@ -375,6 +375,51 @@ static void AllPcmShapesAndStale()
 }
 #endif
 
+static void QueueRetirementKeepsTheNextCurrentRead()
+{
+    struct Case {
+        uint64_t Session, Stream, Gate;
+        LONG Counted;
+        NTSTATUS Status;
+    };
+    constexpr Case cases[] = {
+        {6, 3, 6, 1, STATUS_CANCELLED},
+        {6, 2, 7, 1, STATUS_CANCELLED},
+        {6, 3, 6, 0, STATUS_REVISION_MISMATCH},
+        {5, 3, 6, 1, STATUS_REVISION_MISMATCH},
+        {6, 2, 8, 1, STATUS_REVISION_MISMATCH},
+    };
+    for (const auto& test : cases) {
+        PlaybackFixture f;
+        f.Transfer();
+        Request retired = f.Read;
+        retired.Header.SessionEpoch = test.Session;
+        retired.Header.StreamGeneration = test.Stream;
+        retired.Header.GateEpoch = test.Gate;
+        retired.Counted = test.Counted;
+        std::array<unsigned char, sizeof(f.Mdl)> retiredMdl;
+        retiredMdl.fill(0x5a);
+        retired.Buffer = retiredMdl.data();
+        f.Read.Counted = 1;
+        f.Source[0] = 13;
+        f.Requests = {{&retired, &f.Read}, 0, 2};
+        f.Batch = {}; f.Batch.Shared = &f.Shared;
+        VadPcmTransferLocked(&f.Shared, 0, f.Source.data(), 480, 4, 10, 1000, &f.Batch);
+        Check(f.Batch.Completions.Count == 2 &&
+            f.Batch.Completions.Entries[0].Request == &retired &&
+            f.Batch.Completions.Entries[0].Status == test.Status &&
+            f.Batch.Completions.Entries[0].Information == 0,
+            "only accepted and monotonically retired PCM completes cancelled");
+        for (const auto byte : retiredMdl) {
+            Check(byte == 0x5a, "retirement never writes to the old READ buffer");
+        }
+        Check(f.Batch.Completions.Entries[1].Request == &f.Read &&
+            f.Batch.Completions.Entries[1].Status == STATUS_SUCCESS &&
+            f.Mdl[sizeof(f.Read.Header)] == 13,
+            "old READ does not consume the current packet");
+    }
+}
+
 int main()
 {
     PlaybackFixture fixture;
@@ -403,6 +448,7 @@ int main()
     Check(FixtureQpcCalls == qpcBefore, "default-off actual transfer adds no QPC");
 #endif
     (void)qpcBefore;
+    QueueRetirementKeepsTheNextCurrentRead();
 #if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
     std::printf("PASS: 10 playback-copy groups (real READ/export/reserve, limits, shapes, epoch, MIC, first/last coverage and saturation); per-slot=%zu bytes\n",
         sizeof(vad::PlaybackCopyDiagnostic));

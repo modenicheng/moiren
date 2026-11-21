@@ -37,6 +37,7 @@ struct SpinLock { bool Held = false; };
 constexpr NTSTATUS STATUS_SUCCESS = 0;
 constexpr NTSTATUS STATUS_REVISION_MISMATCH = -1;
 constexpr NTSTATUS STATUS_IO_TIMEOUT = -2;
+constexpr NTSTATUS STATUS_CANCELLED = static_cast<NTSTATUS>(0xc0000120u);
 #define NT_SUCCESS(status) ((status) >= 0)
 #define NT_ASSERT(condition) Check((condition), "production assertion")
 #define UNREFERENCED_PARAMETER(value) (void)(value)
@@ -109,7 +110,12 @@ static NTSTATUS WdfIoQueueRetrieveNextRequest(Queue* queue, WDFREQUEST* result)
     return STATUS_SUCCESS;
 }
 static Request* VadPcmRequest(WDFREQUEST request) { return request; }
-static void DropCountLocked(Request*) {}
+static bool DropCountLocked(Request* request)
+{
+    const bool admitted = request->Counted != 0;
+    request->Counted = 0;
+    return admitted;
+}
 static void RtlZeroMemory(PVOID buffer, ULONG bytes) { std::memset(buffer, 0, bytes); }
 static void RtlCopyMemory(PVOID target, const void* source, ULONG bytes)
 {

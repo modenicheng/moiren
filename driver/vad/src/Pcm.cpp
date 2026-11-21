@@ -8,15 +8,17 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_PCM_QUEUE, VadPcmQueue)
 static EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE CancelQueued;
 static EVT_WDF_OBJECT_CONTEXT_DESTROY DestroyQueue;
 
-static void DropCountLocked(VAD_PCM_REQUEST* context)
+static bool DropCountLocked(VAD_PCM_REQUEST* context)
 {
-    if (InterlockedExchange(&context->Counted, 0) != 0) {
+    const bool admitted = InterlockedExchange(&context->Counted, 0) != 0;
+    if (admitted) {
         auto& slot = context->Shared->Slots[context->Index];
         NT_ASSERT(slot.Id == context->Header.EndpointId && slot.PendingRequests != 0);
         if (slot.Id == context->Header.EndpointId && slot.PendingRequests != 0) {
             --slot.PendingRequests;
         }
     }
+    return admitted;
 }
 
 static void DropCount(VAD_PCM_REQUEST* context)
@@ -320,8 +322,8 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
         RtlZeroMemory(buffer, bytes);
     }
     if (slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0) {
-        // A native packet can satisfy only one request. Stale requests at the
-        // head are completed with the epoch mismatch, but once the first
+        // A native packet can satisfy only one request. Retire stale requests
+        // at the head, but once the first
         // current request is found, leave remaining current requests queued
         // for later native packets.
         for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS && !copied; ++count) {
@@ -339,7 +341,7 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                 break;
             }
             auto context = VadPcmRequest(request);
-            DropCountLocked(context);
+            const bool admitted = DropCountLocked(context);
             const bool appended = batch->Completions.Append(
                 {request, STATUS_REVISION_MISMATCH, 0});
             NT_ASSERT(appended);
@@ -349,6 +351,12 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             if (!vad::SameStream(slot, header) ||
                 slot.SampleFormat != header.SampleFormat || header.Frames != frames ||
                 header.Channels != slot.Channels || bytes > MOIREN_VAD_MAX_PCM_BYTES) {
+                // The dequeued request was admitted before this exact
+                // endpoint advanced its fence. No bytes can cross the
+                // fence, and the caller can observe the cancellation.
+                if (admitted && vad::RetiredPcmAdmission(slot, header)) {
+                    completion.Status = STATUS_CANCELLED;
+                }
                 unservedReasons |= vad::UnservedNoCurrent;
                 continue;
             }
