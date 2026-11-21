@@ -144,7 +144,7 @@ pub(crate) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 .border_b_1()
                 .border_color(theme::BORDER)
                 .child(name_control)
-                .child(label(node_catalog::kind_title(node.kind()))),
+                .child(label(t!(node_catalog::kind_title(node.kind())))),
         )
         .child(detail(&t!("Channels"), node.channels().to_string()));
     // The headline visualization (design 18 B4) leads the kind-specific

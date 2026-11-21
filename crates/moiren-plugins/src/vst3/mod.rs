@@ -22,6 +22,7 @@ use libloading::Library;
 pub mod abi;
 
 use crate::{
+    guard::guarded,
     instance::PluginInstance,
     module::{SharedModule, acquire_module},
     spec::{PluginDescriptor, PluginError, PluginFormat, PluginParamEvent, PluginParameterSpec},
@@ -1297,54 +1298,71 @@ impl PluginInstance for Vst3Instance {
     }
 
     fn save_state(&self) -> Result<Option<Vec<u8>>, PluginError> {
-        let mut component_bytes = Vec::new();
-        {
-            let mut stream = BStreamObject::writer(&mut component_bytes);
-            // SAFETY: live component; stream valid for this call.
-            let result = unsafe { IComponent::get_state(self.component, stream.stream_mut()) };
-            if result != K_RESULT_OK {
-                // Same leniency as the controller segment below: plugins
-                // that keep no component state answer kNotImplemented or
-                // kResultFalse (the DPF builds do), meaning "no segment",
-                // not an error. Any other result is a real failure.
-                if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
-                    return Err(PluginError::State("component getState failed".into()));
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        guarded(&self.descriptor.path, "vst3 state save", || {
+            let mut component_bytes = Vec::new();
+            {
+                let mut stream = BStreamObject::writer(&mut component_bytes);
+                // SAFETY: live component; stream valid for this call.
+                let result = unsafe { IComponent::get_state(self.component, stream.stream_mut()) };
+                if result != K_RESULT_OK {
+                    // Same leniency as the controller segment below: plugins
+                    // that keep no component state answer kNotImplemented or
+                    // kResultFalse (the DPF builds do), meaning "no segment",
+                    // not an error. Any other result is a real failure.
+                    if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                        return Err(PluginError::State("component getState failed".into()));
+                    }
+                    component_bytes.clear();
                 }
-                component_bytes.clear();
             }
-        }
-        let mut controller_bytes = Vec::new();
-        if !self.controller.is_null() {
-            let mut stream = BStreamObject::writer(&mut controller_bytes);
-            // SAFETY: live controller; stream valid for this call.
-            let result =
-                unsafe { IEditController::get_state(self.controller, stream.stream_mut()) };
-            if result != K_RESULT_OK {
-                // Single-component plugins keep all state in IComponent and
-                // answer kNotImplemented/kResultFalse here (e.g. every DPF
-                // build); that means "no controller segment", not an error.
-                if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
-                    return Err(PluginError::State(format!(
-                        "controller getState returned 0x{result:08X}"
-                    )));
+            let mut controller_bytes = Vec::new();
+            if !self.controller.is_null() {
+                let mut stream = BStreamObject::writer(&mut controller_bytes);
+                // SAFETY: live controller; stream valid for this call.
+                let result =
+                    unsafe { IEditController::get_state(self.controller, stream.stream_mut()) };
+                if result != K_RESULT_OK {
+                    // Single-component plugins keep all state in IComponent
+                    // and answer kNotImplemented/kResultFalse here (e.g.
+                    // every DPF build); that means "no controller segment",
+                    // not an error.
+                    if result != K_NOT_IMPLEMENTED && result != K_RESULT_FALSE {
+                        return Err(PluginError::State(format!(
+                            "controller getState returned 0x{result:08X}"
+                        )));
+                    }
+                    controller_bytes.clear();
                 }
-                controller_bytes.clear();
             }
-        }
-        // A plugin that keeps no state on either side stores none, matching
-        // the VST2 non-chunk contract instead of a zero-length blob.
-        if component_bytes.is_empty() && controller_bytes.is_empty() {
-            return Ok(None);
-        }
-        let mut blob = Vec::with_capacity(8 + component_bytes.len() + controller_bytes.len());
-        blob.extend_from_slice(&(component_bytes.len() as u32).to_le_bytes());
-        blob.extend_from_slice(&component_bytes);
-        blob.extend_from_slice(&(controller_bytes.len() as u32).to_le_bytes());
-        blob.extend_from_slice(&controller_bytes);
-        Ok(Some(blob))
+            // A plugin that keeps no state on either side stores none,
+            // matching the VST2 non-chunk contract instead of a zero-length
+            // blob.
+            if component_bytes.is_empty() && controller_bytes.is_empty() {
+                return Ok(None);
+            }
+            let mut blob = Vec::with_capacity(8 + component_bytes.len() + controller_bytes.len());
+            blob.extend_from_slice(&(component_bytes.len() as u32).to_le_bytes());
+            blob.extend_from_slice(&component_bytes);
+            blob.extend_from_slice(&(controller_bytes.len() as u32).to_le_bytes());
+            blob.extend_from_slice(&controller_bytes);
+            Ok(Some(blob))
+        })
+        .and_then(|outcome| outcome)
     }
 
     fn load_state(&mut self, state: &[u8]) -> Result<(), PluginError> {
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        guarded(&self.descriptor.path.clone(), "vst3 state load", || {
+            self.apply_state(state)
+        })
+        .and_then(|outcome| outcome)
+    }
+}
+
+impl Vst3Instance {
+    /// Restore both state segments; see the trait method for the contract.
+    fn apply_state(&mut self, state: &[u8]) -> Result<(), PluginError> {
         let (component_bytes, rest) = split_segment(state)?;
         let (controller_bytes, _) = split_segment(rest)?;
         {

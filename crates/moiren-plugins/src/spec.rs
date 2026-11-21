@@ -110,4 +110,10 @@ pub enum PluginError {
     Process(String),
     #[error("plugin state transfer failed: {0}")]
     State(String),
+    #[error("plugin panicked across the ABI during {call} (plugin: {path}): {message}")]
+    PluginPanic {
+        call: &'static str,
+        path: String,
+        message: String,
+    },
 }

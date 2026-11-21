@@ -115,18 +115,7 @@ impl CaptureSession {
         self.join_returning()
     }
     fn join_returning(mut self) -> (Option<CaptureReport>, Option<CaptureError>) {
-        match self.worker.take().expect("owned capture worker").join() {
-            Ok(report) => (Some(report), None),
-            // Process preparation preserves its report as the unwind payload,
-            // but a panic must still be an Err for every legacy join caller.
-            Err(payload) => (
-                payload
-                    .downcast::<CaptureReport>()
-                    .ok()
-                    .map(|report| *report),
-                Some(CaptureError::WorkerPanicked),
-            ),
-        }
+        join_worker(self.worker.take().expect("owned capture worker"))
     }
     /// Bounded variant of [`CaptureSession::join`] (issue #105 teardown
     /// bound): a worker wedged in its COM wind-down past `deadline` is
@@ -137,22 +126,65 @@ impl CaptureSession {
         mut self,
         deadline: std::time::Instant,
     ) -> Result<CaptureReport, CaptureError> {
-        let worker = self.worker.take().expect("owned capture worker");
-        while !worker.is_finished() {
-            if std::time::Instant::now() >= deadline {
-                drop(worker);
-                return Err(CaptureError::TeardownTimeout);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        let (report, error) = self.join_returning_within(deadline);
+        match error {
+            Some(error) => Err(error),
+            None => Ok(report.expect("joined capture report")),
         }
-        worker.join().map_err(|_| CaptureError::WorkerPanicked)
     }
+    fn join_returning_within(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> (Option<CaptureReport>, Option<CaptureError>) {
+        join_bounded(self.worker.take().expect("owned capture worker"), deadline)
+    }
+}
+
+fn join_worker(worker: JoinHandle<CaptureReport>) -> (Option<CaptureReport>, Option<CaptureError>) {
+    match worker.join() {
+        Ok(report) => (Some(report), None),
+        // Process preparation preserves its report as the unwind payload.
+        Err(payload) => (
+            payload
+                .downcast::<CaptureReport>()
+                .ok()
+                .map(|report| *report),
+            Some(CaptureError::WorkerPanicked),
+        ),
+    }
+}
+/// Wait for the worker until `deadline`, then detach it: a wedged
+/// `Initialize`/`Stop`/COM wind-down must not park the waiting thread
+/// forever (issue #105 teardown bound). The abandoned worker's apartment
+/// unwinds on its own thread whenever the driver call finally returns.
+fn join_bounded(
+    worker: JoinHandle<CaptureReport>,
+    deadline: std::time::Instant,
+) -> (Option<CaptureReport>, Option<CaptureError>) {
+    while !worker.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            drop(worker);
+            return (None, Some(CaptureError::TeardownTimeout));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    join_worker(worker)
 }
 impl Drop for CaptureSession {
     fn drop(&mut self) {
         if let Some(worker) = self.worker.take() {
             let _ = self.request_stop();
-            let _ = worker.join();
+            // The fallback join is bounded like every other teardown join
+            // (issue #105): this drop covers the handshake-failure paths
+            // where no explicit `join`/`join_within` caller owns the
+            // worker, so a wedged COM wind-down detaches here instead of
+            // parking the dropping control thread forever. The lost report
+            // is unrecoverable on this path by construction; the timeout
+            // is deliberately swallowed.
+            let _ = join_bounded(
+                worker,
+                std::time::Instant::now() + crate::NATIVE_TEARDOWN_DEADLINE,
+            );
         }
     }
 }
@@ -187,6 +219,14 @@ struct CaptureAbortGuard<F: FnOnce() -> A, A> {
 
 impl<F: FnOnce() -> A, A> CaptureAbortGuard<F, A> {
     fn failure(&mut self, error: CaptureError) -> Box<CapturePreparationAbortFailure<A>> {
+        self.failure_with_join_timeout(error, crate::NATIVE_TEARDOWN_DEADLINE)
+    }
+
+    fn failure_with_join_timeout(
+        &mut self,
+        error: CaptureError,
+        timeout: std::time::Duration,
+    ) -> Box<CapturePreparationAbortFailure<A>> {
         let stop_error = if self.session.is_some() || self.stop_without_owner {
             self.stop
                 .request_stop()
@@ -205,7 +245,7 @@ impl<F: FnOnce() -> A, A> CaptureAbortGuard<F, A> {
         let (report, join_error) = self
             .session
             .take()
-            .map(CaptureSession::join_returning)
+            .map(|mut session| session.join_returning_within(std::time::Instant::now() + timeout))
             .unwrap_or((None, None));
         let (abort, abort_panicked) = match aborted {
             Ok(value) => (Some(value), false),
@@ -251,9 +291,17 @@ pub(crate) struct Startup {
     sample_rate: u32,
     channels: usize,
 }
+/// Deadline for the startup handshake (issue #105 open bound): the worker
+/// holds the negotiation, process-loopback activation (itself bounded at
+/// 10 s), `Initialize` and `SetEventHandle`, so this wait is the control
+/// thread's only unbounded exposure during capture preparation. A wedged
+/// native call must degrade preparation into an error instead of freezing
+/// `moiren-host-prepare` forever. Deliberately equal to the professional
+/// backend's per-group `OPEN_DEADLINE`.
+const STARTUP_HANDSHAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Non-RT startup handshake. Native negotiation happens on the worker, so a
 /// rejected format can never be attached to a supposedly running graph.
-#[cfg(test)]
 #[cfg(test)]
 pub(crate) fn start_owner(
     signal: StopSignal,
@@ -346,7 +394,7 @@ fn start_owner_with_spawn<A>(
         started,
         worker: Some(worker),
     });
-    match rx.recv() {
+    match rx.recv_timeout(STARTUP_HANDSHAKE_DEADLINE) {
         Ok(Ok(ready)) => {
             let session = guard.session.take().expect("owned capture session");
             guard.before_join = None;
@@ -359,8 +407,10 @@ fn start_owner_with_spawn<A>(
             })
         }
         Ok(Err(error)) => Err(guard.failure(error)),
-        Err(_) => {
-            let mut failure = guard.failure(CaptureError::StartupLost);
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(guard.failure(CaptureError::HandshakeTimeout)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let mut failure = guard
+                .failure_with_join_timeout(CaptureError::StartupLost, STARTUP_HANDSHAKE_DEADLINE);
             failure.legacy_error = failure.join_error.unwrap_or(failure.error);
             Err(failure)
         }

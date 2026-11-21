@@ -31,6 +31,7 @@ pub mod spec;
 pub mod vst2;
 pub mod vst3;
 
+mod guard;
 mod instance;
 mod module;
 
@@ -45,27 +46,37 @@ pub use spec::{
 /// configuration that will drive `process`; the instance activates for
 /// exactly those bounds. The descriptor's channel counts must satisfy the
 /// equal-width main-bus rule (enforced here with
-/// [`PluginError::NoAudioPorts`]).
+/// [`PluginError::NoAudioPorts`]). A Rust panic unwinding out of any plugin
+/// call during instantiation becomes [`PluginError::PluginPanic`]; the host
+/// process survives and the half-built plugin object is deliberately leaked
+/// (never call back into a plugin that just panicked).
 pub fn instantiate(
     descriptor: &PluginDescriptor,
     sample_rate: f64,
     max_block_frames: u32,
 ) -> Result<Box<dyn PluginInstance>, PluginError> {
-    match descriptor.format {
+    // Every format's instantiate covers all control-side FFI of the setup
+    // path (module load, entry init, factory queries, create/init/activate)
+    // inside one guard frame.
+    let path = descriptor.path.clone();
+    let (format, sample_rate, max_block_frames) =
+        (descriptor.format, sample_rate, max_block_frames);
+    guard::guarded(&path, "instantiate", move || match format {
         PluginFormat::Clap => Ok(Box::new(clap::instantiate(
             descriptor,
             sample_rate,
             max_block_frames,
-        )?)),
+        )?) as Box<dyn PluginInstance>),
         PluginFormat::Vst3 => Ok(Box::new(vst3::instantiate(
             descriptor,
             sample_rate,
             max_block_frames,
-        )?)),
+        )?) as Box<dyn PluginInstance>),
         PluginFormat::Vst2 => Ok(Box::new(vst2::instantiate(
             descriptor,
             sample_rate,
             max_block_frames,
-        )?)),
-    }
+        )?) as Box<dyn PluginInstance>),
+    })
+    .and_then(|instance| instance)
 }

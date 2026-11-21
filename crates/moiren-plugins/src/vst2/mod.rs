@@ -13,6 +13,7 @@ use std::{
 pub mod abi;
 
 use crate::{
+    guard::guarded,
     instance::PluginInstance,
     module::{SharedModule, acquire_module},
     spec::{PluginDescriptor, PluginError, PluginFormat, PluginParamEvent, PluginParameterSpec},
@@ -342,6 +343,37 @@ impl Vst2Instance {
         }
     }
 
+    /// SAFETY precondition: the effect is live. Enumerates factory program
+    /// names control-side; each dispatcher call writes at most
+    /// kVstMaxProgNameLen bytes into the local buffer.
+    fn collect_preset_names(&self) -> Vec<String> {
+        let count = unsafe { (*self.effect).num_programs }.clamp(0, 4096);
+        let mut names = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let mut buffer = [0u8; 64];
+            unsafe {
+                ((*self.effect).dispatcher)(
+                    self.effect,
+                    EFF_GET_PROGRAM_NAME_INDEXED,
+                    index,
+                    0,
+                    buffer.as_mut_ptr().cast(),
+                    0.0,
+                );
+            }
+            let name = string_from_cbuf(&buffer);
+            // Some plugins answer the opcode with an empty buffer; a
+            // numbered row keeps the picker aligned with the plugin's own
+            // program order instead of collapsing the list.
+            names.push(if name.is_empty() {
+                format!("Program {}", index + 1)
+            } else {
+                name
+            });
+        }
+        names
+    }
+
     /// Suspend, apply, resume — the state-transfer window the spec expects.
     fn with_suspended_renderer(
         &mut self,
@@ -450,64 +482,76 @@ impl PluginInstance for Vst2Instance {
     }
 
     fn save_state(&self) -> Result<Option<Vec<u8>>, PluginError> {
-        if !self.has_chunks {
-            return Ok(None);
-        }
-        let mut data: *mut c_void = std::ptr::null_mut();
-        // SAFETY: control-side chunk request; the plugin hands back a buffer
-        // it owns until the next dispatcher call.
-        //
-        // The dispatcher's `index` is the isBank flag: 0 saves the one
-        // program this instance runs (what every mainstream host stores),
-        // 1 would save a whole preset bank. Plugins exist that implement
-        // only one of the two (T-RackS CS Metering answers only program
-        // chunks), so the instance contract maps to the program side.
-        let size = unsafe {
-            ((*self.effect).dispatcher)(
-                self.effect,
-                EFF_GET_CHUNK,
-                0,
-                0,
-                std::ptr::from_mut(&mut data).cast(),
-                0.0,
-            )
-        };
-        if size <= 0 || data.is_null() {
-            // A plugin that claims effFlagsProgramChunks yet returns nothing
-            // for both program and bank chunks (T-RackS CS Metering) has no
-            // savable state; the VST2 ABI has no error code here, and
-            // mainstream hosts store nothing rather than fail the save.
-            return Ok(None);
-        }
-        // SAFETY: size bytes readable per the chunk contract.
-        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
-        Ok(Some(bytes.to_vec()))
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        guarded(&self.descriptor.path, "vst2 chunk save", || {
+            if !self.has_chunks {
+                return Ok(None);
+            }
+            let mut data: *mut c_void = std::ptr::null_mut();
+            // SAFETY: control-side chunk request; the plugin hands back a buffer
+            // it owns until the next dispatcher call.
+            //
+            // The dispatcher's `index` is the isBank flag: 0 saves the one
+            // program this instance runs (what every mainstream host stores),
+            // 1 would save a whole preset bank. Plugins exist that implement
+            // only one of the two (T-RackS CS Metering answers only program
+            // chunks), so the instance contract maps to the program side.
+            let size = unsafe {
+                ((*self.effect).dispatcher)(
+                    self.effect,
+                    EFF_GET_CHUNK,
+                    0,
+                    0,
+                    std::ptr::from_mut(&mut data).cast(),
+                    0.0,
+                )
+            };
+            if size <= 0 || data.is_null() {
+                // A plugin that claims effFlagsProgramChunks yet returns nothing
+                // for both program and bank chunks (T-RackS CS Metering) has no
+                // savable state; the VST2 ABI has no error code here, and
+                // mainstream hosts store nothing rather than fail the save.
+                return Ok(None);
+            }
+            // SAFETY: size bytes readable per the chunk contract.
+            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size as usize) };
+            Ok(Some(bytes.to_vec()))
+        })
+        .and_then(|outcome| outcome)
     }
 
     fn load_state(&mut self, state: &[u8]) -> Result<(), PluginError> {
         if !self.has_chunks || state.is_empty() {
             return Ok(());
         }
-        let outcome = self.with_suspended_renderer(|instance| {
-            // SAFETY: the state buffer outlives the dispatcher call; the
-            // plugin copies what it needs.
-            //
-            // The return value carries no success signal: JUCE (and much of
-            // the ecosystem) returns 0 here, other plugins return 1, so the
-            // dispatcher result is deliberately ignored like mainstream
-            // hosts do.
-            unsafe {
-                ((*instance.effect).dispatcher)(
-                    instance.effect,
-                    EFF_SET_CHUNK,
-                    0,
-                    state.len() as isize,
-                    state.as_ptr() as *mut c_void,
-                    0.0,
-                )
-            };
-            Ok(())
-        });
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        // `with_suspended_renderer` (stop/mains/start) and the parameter
+        // re-read run inside the same frame: a panic leaves the renderer
+        // suspended and poisons this instance, but the host survives,
+        // matching the guard contract.
+        let outcome = guarded(&self.descriptor.path.clone(), "vst2 chunk load", || {
+            self.with_suspended_renderer(|instance| {
+                // SAFETY: the state buffer outlives the dispatcher call; the
+                // plugin copies what it needs.
+                //
+                // The return value carries no success signal: JUCE (and much
+                // of the ecosystem) returns 0 here, other plugins return 1,
+                // so the dispatcher result is deliberately ignored like
+                // mainstream hosts do.
+                unsafe {
+                    ((*instance.effect).dispatcher)(
+                        instance.effect,
+                        EFF_SET_CHUNK,
+                        0,
+                        state.len() as isize,
+                        state.as_ptr() as *mut c_void,
+                        0.0,
+                    )
+                };
+                Ok(())
+            })
+        })
+        .and_then(|outcome| outcome);
         // The chunk moved the plugin off its scanned defaults; the table
         // must follow what the instance reports now (see
         // `refresh_parameters` for why a stale table would swallow edits).
@@ -518,33 +562,15 @@ impl PluginInstance for Vst2Instance {
     }
 
     fn preset_names(&self) -> Vec<String> {
-        // SAFETY: control-side name reads on the live effect; each call
-        // writes at most kVstMaxProgNameLen bytes into the local buffer.
-        let count = unsafe { (*self.effect).num_programs }.clamp(0, 4096);
-        let mut names = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let mut buffer = [0u8; 64];
-            unsafe {
-                ((*self.effect).dispatcher)(
-                    self.effect,
-                    EFF_GET_PROGRAM_NAME_INDEXED,
-                    index,
-                    0,
-                    buffer.as_mut_ptr().cast(),
-                    0.0,
-                );
-            }
-            let name = string_from_cbuf(&buffer);
-            // Some plugins answer the opcode with an empty buffer; a
-            // numbered row keeps the picker aligned with the plugin's own
-            // program order instead of collapsing the list.
-            names.push(if name.is_empty() {
-                format!("Program {}", index + 1)
-            } else {
-                name
-            });
-        }
-        names
+        // Control-side FFI: guarded so a plugin panic becomes an error. The
+        // signature cannot report one, so a caught panic degrades to an
+        // empty list — the picker shows no presets, which is truthful for a
+        // plugin whose enumeration just faulted — instead of aborting the
+        // host over a menu.
+        guarded(&self.descriptor.path, "vst2 preset names", || {
+            self.collect_preset_names()
+        })
+        .unwrap_or_default()
     }
 
     fn select_preset(&mut self, index: u32) -> Result<(), PluginError> {
@@ -557,24 +583,31 @@ impl PluginInstance for Vst2Instance {
                 "program {index} is outside the plugin's {programs} reported programs"
             )));
         }
-        // SAFETY: control-side program switch on the live effect. The VST2
-        // hosting contract does not suspend the renderer for a program
-        // change (unlike a chunk transfer), so no stop/start dance here.
-        unsafe {
-            ((*self.effect).dispatcher)(
-                self.effect,
-                EFF_SET_PROGRAM,
-                0,
-                index as isize,
-                std::ptr::null_mut(),
-                0.0,
-            );
-        }
-        // The program moved the plugin off its scanned defaults; the table
-        // must follow what the instance reports now (see
-        // `refresh_parameters` for why a stale table would swallow edits).
-        self.refresh_parameters();
-        Ok(())
+        // Control-side FFI: guarded so a plugin panic becomes an error; the
+        // parameter re-read runs in the same frame.
+        guarded(&self.descriptor.path.clone(), "vst2 preset select", || {
+            // SAFETY: control-side program switch on the live effect. The
+            // VST2 hosting contract does not suspend the renderer for a
+            // program change (unlike a chunk transfer), so no stop/start
+            // dance here.
+            unsafe {
+                ((*self.effect).dispatcher)(
+                    self.effect,
+                    EFF_SET_PROGRAM,
+                    0,
+                    index as isize,
+                    std::ptr::null_mut(),
+                    0.0,
+                );
+            }
+            // The program moved the plugin off its scanned defaults; the
+            // table must follow what the instance reports now (see
+            // `refresh_parameters` for why a stale table would swallow
+            // edits).
+            self.refresh_parameters();
+            Ok(())
+        })
+        .and_then(|outcome| outcome)
     }
 }
 

@@ -13,8 +13,9 @@ use gpui_kit::{
     Entity, ScrollDelta, SharedString, TestAppContext, VisualTestContext, point, px, size,
 };
 
-use super::{Page, StudioShell, WorkspaceView};
+use super::{Page, WorkspaceView};
 use crate::service::{AppRequest, GraphEdit};
+use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell, wait_until};
 use crate::ui::widgets::actions::Density;
 

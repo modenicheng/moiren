@@ -131,7 +131,14 @@ pub trait EngineBackend<S: ProcessingSample>: Send + Sync + 'static {
         request: PrepareRequest<'_>,
         cancel: &CancellationToken,
     ) -> Result<PreparedBackend<S>, BackendError>;
-    /// Nonblocking, one event per call. Probes must be bounded and cancellable.
+    /// Nonblocking, one event per call, and probing must stay off the
+    /// polling thread: implementations run device probes as bounded sweeps
+    /// on their own short-lived threads (abandoned at a deadline, their
+    /// outcome reported as unknown — never dressed up as present or
+    /// absent) and return `None` while a sweep is in flight. There is no
+    /// cancel token by design: the poll's side effect is a bounded,
+    /// deadline-abandoned probe, not a blocking wait, and probing stops
+    /// when the host stops calling.
     fn poll_resource(&self) -> Option<ResourceEvent> {
         None
     }

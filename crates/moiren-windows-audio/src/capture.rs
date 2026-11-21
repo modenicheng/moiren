@@ -90,6 +90,8 @@ pub enum CaptureError {
     TargetExited,
     #[error("process audio activation exceeded the 10 second deadline")]
     ActivationTimeout,
+    #[error("capture worker did not report startup within the 10 second deadline")]
+    HandshakeTimeout,
 }
 pub(crate) fn validate_duration(duration: SessionDuration) -> Result<(), CaptureError> {
     if duration.validate().is_err() {

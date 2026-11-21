@@ -62,6 +62,19 @@ fn teardown_deadline() -> Duration {
     }
 }
 
+/// Transport-level cap over the whole serial teardown sequence (issue #105):
+/// per-worker joins alone could stretch Stop, re-apply and app exit to
+/// groups × per-worker deadline. The cap is deliberately a multiple of the
+/// per-worker deadline: healthy teardowns finish in milliseconds, and a few
+/// slow-but-alive drivers each finishing just inside their own deadline
+/// never reach it — only a transport with several *simultaneously* wedged
+/// drivers does, at which point the remaining workers are abandoned exactly
+/// like a single wedged one (fenced + detached, their late tails unwinding
+/// on their own threads).
+fn teardown_budget() -> Duration {
+    teardown_deadline().saturating_mul(4)
+}
+
 pub(super) trait AuxiliaryOwner: Send {
     fn activate(&self) -> Result<(), BackendError>;
     fn cancel(&self);
@@ -537,6 +550,12 @@ fn native_owner<S: ProcessingSample>(
         // Activation authorizes native start even when the master has no PCM.
         // The follower pump supplies silence without advancing Engine.
         stream.start()?;
+        // UNPROVEN INVARIANT (audit X11): this log site executes on the
+        // audio thread after native start. The rt-check instrumentation
+        // pins zero allocation on the normal pump path, not the logging
+        // layer — log formatting may allocate. It stays for its diagnostic
+        // value (the transport is dying or starting, never mid-block);
+        // reviews must not cite it as proven allocation-free.
         log::debug!(
             target: "moiren::audio::professional",
             "native stream started: master={}",
@@ -763,6 +782,15 @@ impl Pump {
                 + 64,
         })
     }
+    /// One pump cycle.
+    ///
+    /// UNPROVEN INVARIANT (audit X11): the fault returns inside this cycle
+    /// (`unsupported(...)` at the capture/render guard rails, the
+    /// `e.to_string()` render-failure mapping) allocate while building
+    /// their error strings, on this audio thread. rt-check pins zero
+    /// allocation on the *normal* path only; these branches run when the
+    /// stream is already failing and keep their diagnostics. Reviews must
+    /// not cite them as proven allocation-free.
     pub(super) fn cycle<S: ProcessingSample>(
         &mut self,
         native: &mut dyn NativeStream,
@@ -1102,18 +1130,24 @@ impl<S: ProcessingSample> Transport<S> {
                 self.state.fail(BackendError::WorkerPanicked);
             }
         }
-        // Each worker gets its own full deadline: healthy teardowns run in
-        // milliseconds regardless of the budget, while one wedged driver
-        // release is fenced and abandoned at its deadline instead of parking
-        // Stop, re-apply, and app exit (issue #105 teardown bound).
+        // Each worker gets its own full deadline — clipped by the one
+        // transport-level budget shared by the whole cleanup pass below:
+        // healthy teardowns run in milliseconds regardless of the budget,
+        // while a wedged driver release is fenced and abandoned at its
+        // deadline instead of parking Stop, re-apply, and app exit
+        // (issue #105 teardown bound).
         let worker_deadline = teardown_deadline();
+        let total_deadline = Instant::now() + teardown_budget();
         for worker in &mut self.workers {
-            if let Err(error) = worker.join_within(Instant::now() + worker_deadline) {
+            let deadline = (Instant::now() + worker_deadline).min(total_deadline);
+            if let Err(error) = worker.join_within(deadline) {
                 self.state.fail(error);
             }
         }
         for mut auxiliary in self.auxiliaries.drain(..) {
-            let deadline = Instant::now() + teardown_deadline();
+            // The same transport-level budget covers auxiliary joins, so a
+            // stack of wedged auxiliaries cannot outlive the cap either.
+            let deadline = (Instant::now() + teardown_deadline()).min(total_deadline);
             if let Err(error) = catch_unwind(AssertUnwindSafe(|| auxiliary.join(deadline)))
                 .unwrap_or(Err(BackendError::WorkerPanicked))
             {

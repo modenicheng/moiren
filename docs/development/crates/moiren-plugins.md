@@ -13,6 +13,7 @@ Deliberately leaf crate: CLAP/VST2/VST3 binary loading, scanning, and realtime p
 - `src/scan.rs`: standard-directory discovery, recursive search, VST3 bundle resolution, and per-file failure collection.
 - `src/sandbox.rs`: out-of-process scanning. The parent spawns `moiren-plugin-scanner` once per root with a deadline and reads a JSON report from a file argument (not stdout).
 - `src/instance.rs`, `src/spec.rs`: the format-agnostic realtime instance contract and parameter metadata.
+- `src/guard.rs`: control-side panic guard. Every non-RT host call into plugin code goes through `guarded`, which turns a Rust panic unwinding out of the plugin into `PluginError::PluginPanic` (plugin path + call site).
 - `src/bin/moiren-plugin-scanner.rs`: the scanner half of the sandbox.
 - `tests/plugin_ffi.rs` builds a self-contained gain fixture cdylib and exercises all three entry points; `tests/sandbox.rs` covers the scanner process; `examples/probe.rs` is a manual probe.
 
@@ -22,6 +23,8 @@ Deliberately leaf crate: CLAP/VST2/VST3 binary loading, scanning, and realtime p
 - Never load an untrusted plugin in the host process for scanning; the sandbox child crashing or hanging must surface as a typed `SandboxError` for that root only. Preserve the file-based report path.
 - Keep the crate free of `moiren-*` dependencies (only `thiserror`, `serde`, `serde_json`, `libloading` today). The engine depends on this crate, never the reverse.
 - No Rust panic or unwind may cross an FFI boundary; keep ABI declarations and format-specific parameter units intact (CLAP plain values, VST2/VST3 normalized `0..1`).
+- Control-side panic isolation: `instantiate`, state save/load, and preset query/select are wrapped in `catch_unwind` (`src/guard.rs`); a panic becomes `PluginError::PluginPanic` and the host survives. Honest boundary (verified empirically on Windows MSVC): the guard catches panics that unwind through the *host's* Rust runtime — host plumbing inside the frame, or plugin code sharing the host's runtime. Panics raised by a separately compiled Rust cdylib abort as "foreign exceptions" (each cdylib links its own std), C++ exceptions translated into SEH are not Rust unwinds, and segfaults were never catchable — all of those still take the process down, and a caught panic deliberately leaks the half-built plugin object instead of calling back into it. `Drop` teardown is unguarded (nothing to report to; calling back into a panicking plugin is unsound). `preset_names` degrades to an empty list because its signature cannot carry an error.
+- `process` (the RT path) has no panic guard by design: unwinding across an `extern "C"` boundary is UB (the Rust `"C"` ABI aborts on unwind), `catch_unwind`'s panic path allocates, and segfaults were never Rust unwinds anyway. Runtime crash isolation requires out-of-process plugin instantiation — that is the follow-up campaign line (2026-11-11 audit, M3: "C++ ABI 无崩溃隔离"; scanning is already out of process, instantiation is not).
 
 ## Verification
 

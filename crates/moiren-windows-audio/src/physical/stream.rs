@@ -2,11 +2,12 @@
 use super::{EndpointReport, RenderSummary};
 use crate::{
     catalog::{ApiFailure, FormatSnapshot},
-    negotiation::endpoint_data_flow,
-    stats::CaptureStats,
-    win32_raii::{
-        Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory, current_shared_mode_engine_period,
+    negotiation::{
+        ParsedDescriptor, SUBFORMAT_FLOAT, endpoint_data_flow, mix_format, open_endpoint_device,
+        parse_descriptor,
     },
+    stats::CaptureStats,
+    win32_raii::{Apartment, Mmcss, OwnedHandle, Streaming, current_shared_mode_engine_period},
 };
 use std::time::{Duration, Instant};
 use windows::{
@@ -17,15 +18,14 @@ use windows::{
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other,
             AudioClientProperties, IAudioCaptureClient, IAudioClient, IAudioClient2, IAudioClient3,
             IAudioClock, IAudioClock2, IAudioRenderClient, IAudioSessionControl,
-            IAudioSessionControl2, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEXTENSIBLE,
-            eCapture, eRender,
+            IAudioSessionControl2, eCapture, eRender,
         },
         System::{
-            Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
+            Com::{CLSCTX_ALL, CoCreateGuid},
             Threading::WaitForSingleObject,
         },
     },
-    core::{GUID, HSTRING, Interface, Result},
+    core::{Interface, Result},
 };
 
 mod sampling;
@@ -40,9 +40,7 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
     // before this guard uninitializes the worker's apartment, even on an error.
     let _apartment = Apartment::new()?;
     report.last_stage = "GetDevice / flow";
-    let enumerator: IMMDeviceEnumerator =
-        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-    let device = unsafe { enumerator.GetDevice(&HSTRING::from(&report.endpoint_id))? };
+    let device = open_endpoint_device(&report.endpoint_id)?;
     let flow = endpoint_data_flow(&device)?;
     report.flow = if flow == eRender {
         "render"
@@ -63,21 +61,26 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
         })?;
     }
     report.last_stage = "GetMixFormat / native f32 validation";
-    let memory = TaskMemory(unsafe { client.GetMixFormat()? });
-    if memory.0.is_null() {
-        return Err(unexpected());
-    }
+    let memory = mix_format(&client)?;
     let base = unsafe { memory.0.read_unaligned() };
     let mut descriptor = FormatSnapshot::from_base(base);
-    let mut float = base.wFormatTag == 3;
-    if base.wFormatTag == 0xfffe && base.cbSize >= 22 {
-        let extended = unsafe { memory.0.cast::<WAVEFORMATEXTENSIBLE>().read_unaligned() };
-        let guid = extended.SubFormat;
-        descriptor.valid_bits = Some(unsafe { extended.Samples.wValidBitsPerSample });
-        descriptor.channel_mask = Some(extended.dwChannelMask);
-        descriptor.sub_format = Some(format!("{guid:?}"));
-        float = guid == GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-    }
+    // SAFETY: mix_format guarantees the complete base+cbSize allocation;
+    // the kernel parse copies packed fields by value.
+    let parsed = unsafe { parse_descriptor(memory.0) }
+        .map_err(|_| windows::core::Error::from_hresult(AUDCLNT_E_UNSUPPORTED_FORMAT))?;
+    let float = match parsed {
+        ParsedDescriptor::Float { .. } => true,
+        ParsedDescriptor::Extensible(extended) => {
+            // Packed struct: copy fields by value; no reference escapes.
+            let sub_format = extended.SubFormat;
+            let valid_bits = unsafe { extended.Samples.wValidBitsPerSample };
+            descriptor.valid_bits = Some(valid_bits);
+            descriptor.channel_mask = Some(extended.dwChannelMask);
+            descriptor.sub_format = Some(format!("{sub_format:?}"));
+            sub_format == SUBFORMAT_FLOAT
+        }
+        ParsedDescriptor::Pcm { .. } => false,
+    };
     report.format = Some(descriptor);
     if !float
         || base.wBitsPerSample != 32

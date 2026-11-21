@@ -1,7 +1,8 @@
 //! Settings page cache tests (design 17 hazard 6): rebuild counters pair
 //! with paint-output checks, never with the root's per-frame render count.
 
-use super::{Editor, Section, StudioShell};
+use super::{Editor, Section};
+use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{finish_service, settle_panels, test_shell};
 use crate::ui::widgets::actions::Density;
 use gpui_kit::test::TestWindowExt;

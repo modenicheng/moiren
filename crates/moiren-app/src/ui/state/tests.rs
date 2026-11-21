@@ -276,6 +276,44 @@ fn display_label_shows_the_node_label_even_when_a_device_is_bound() {
 }
 
 #[test]
+fn queue_degradation_counts_surface_through_the_fault_channel() {
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let mut state = UiState::new(handle.clone(), initial_projection(&handle));
+    assert!(
+        !crate::ui::shell::fault_popover::has_unlocated(&state),
+        "a clean session lists no unlocated diagnostics"
+    );
+    Arc::make_mut(&mut state.snapshot)
+        .control
+        .dropped_parameters = 2;
+    assert!(
+        crate::ui::shell::fault_popover::has_unlocated(&state),
+        "a nonzero degradation count mounts the fault channel"
+    );
+    assert_eq!(
+        crate::ui::shell::fault_popover::queue_degradation_summary(&state).as_deref(),
+        Some("Parameter updates dropped: 2"),
+        "the summary renders the factual count under the default locale"
+    );
+    // The parameter count takes precedence; the request-queue count shows
+    // once the first is zero.
+    Arc::make_mut(&mut state.snapshot).control.rejected_requests = 3;
+    assert_eq!(
+        crate::ui::shell::fault_popover::queue_degradation_summary(&state).as_deref(),
+        Some("Parameter updates dropped: 2")
+    );
+    let mut snapshot = (*state.snapshot).clone();
+    snapshot.control.dropped_parameters = 0;
+    state.snapshot = std::sync::Arc::new(snapshot);
+    assert_eq!(
+        crate::ui::shell::fault_popover::queue_degradation_summary(&state).as_deref(),
+        Some("Request queue rejections: 3")
+    );
+    finish_service(runtime);
+}
+
+#[test]
 fn dispatch_failure_text_translates_at_paint_per_locale() {
     // failure_text reads the process locale at paint; under the default
     // locale it renders the English key, and the explicit zh-CN lookup of

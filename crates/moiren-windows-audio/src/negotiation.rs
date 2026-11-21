@@ -81,6 +81,41 @@ pub(crate) fn endpoint_data_flow(device: &IMMDevice) -> windows::core::Result<ED
     unsafe { endpoint.GetDataFlow() }
 }
 
+/// Open a pinned endpoint by ID on the calling thread's apartment: the
+/// `MMDeviceEnumerator` creation and `GetDevice` pair shared by the probe
+/// stacks. Callers keep their own stage labels and error mapping.
+#[cfg(feature = "probe-tools")]
+pub(crate) fn open_endpoint_device(
+    endpoint_id: &str,
+) -> windows::core::Result<windows::Win32::Media::Audio::IMMDevice> {
+    use windows::Win32::{
+        Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator},
+        System::Com::{CLSCTX_ALL, CoCreateInstance},
+    };
+    use windows::core::HSTRING;
+    // SAFETY: in-process COM activation and a device lookup, per the
+    // apartment the caller must already own.
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+    unsafe { enumerator.GetDevice(&HSTRING::from(endpoint_id)) }
+}
+
+/// GetMixFormat with the shared null-descriptor guard: the audio engine must
+/// always hand back a format, so a null pointer is an unexpected failure.
+/// The returned allocation stays owned by the caller until its TaskMemory drop.
+#[cfg(feature = "probe-tools")]
+pub(crate) fn mix_format(
+    client: &IAudioClient,
+) -> windows::core::Result<crate::win32_raii::TaskMemory<WAVEFORMATEX>> {
+    use windows::Win32::Foundation::E_UNEXPECTED;
+    // SAFETY: COM call on a live client; the returned pointer is owned.
+    let memory = crate::win32_raii::TaskMemory(unsafe { client.GetMixFormat()? });
+    if memory.0.is_null() {
+        return Err(windows::core::Error::from_hresult(E_UNEXPECTED));
+    }
+    Ok(memory)
+}
+
 /// A tag-dispatched parse of one owned WAVEFORMATEX allocation.
 #[derive(Clone)]
 pub(crate) enum ParsedDescriptor {

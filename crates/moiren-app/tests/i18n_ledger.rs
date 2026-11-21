@@ -56,6 +56,8 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Devices",
     "Matrix",
     // Node library cards: `NodeTemplate::title` in src/ui/pages/graph/node_catalog.rs.
+    // The same strings serve as `kind_title`'s runtime keys, translated at
+    // render time in the node inspector and the mixer/tray strip subtitle.
     "Physical input",
     "Virtual device",
     "Application audio",
@@ -73,7 +75,11 @@ const ALLOWED_RUNTIME_KEYS: &[&str] = &[
     "Spectrum analyzer",
     "Processor rack",
     "Mix bus",
+    "Plugin",
     "Device output",
+    // `kind_title` fallbacks for kinds without their own template.
+    "Input",
+    "Output",
     // Node library section headers: `NodeTemplate::group`.
     "SOURCES",
     "PROCESSING",

@@ -452,6 +452,28 @@ fn capture_abort_process_panic_report_does_not_convert_legacy_join_to_success() 
 }
 
 #[test]
+fn bounded_capture_join_reports_timeout_without_waiting_for_the_owner() {
+    let (release, wait) = mpsc::sync_channel(0);
+    let (finished, observed) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        wait.recv().unwrap();
+        finished.send(()).unwrap();
+        CaptureReport::new(
+            crate::capture::CaptureSource::ProcessLoopback,
+            crate::SessionDuration::UntilStopped,
+        )
+    });
+
+    let (report, error) = join_bounded(worker, std::time::Instant::now());
+    assert!(report.is_none());
+    assert_eq!(error, Some(CaptureError::TeardownTimeout));
+    release.send(()).unwrap();
+    observed
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
 fn capture_join_retaining_report_preserves_successful_owner_report() {
     let prepared = start_owner_returning_with_abort(
         StopSignal::new().unwrap(),

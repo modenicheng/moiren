@@ -53,9 +53,36 @@ pub(crate) fn has_unlocated(state: &UiState) -> bool {
         .faults
         .iter()
         .any(|fault| fault.subject == GraphSubject::Graph)
+        || queue_degradation_summary(state).is_some()
         || state.dispatch_error.is_some()
         || state.snapshot.error.is_some()
         || state.snapshot.catalog_error.is_some()
+}
+
+/// The cumulative bounded-queue degradation facts, if any: dropped live
+/// parameter updates and rejected queue entries share one summary slot.
+/// Counts never reset, so the degradation stays visible after the fact.
+pub(crate) fn queue_degradation_summary(state: &UiState) -> Option<String> {
+    let control = &state.snapshot.control;
+    if control.dropped_parameters > 0 {
+        Some(
+            t!(
+                "Parameter updates dropped: %{count}",
+                count = control.dropped_parameters
+            )
+            .into_owned(),
+        )
+    } else if control.rejected_requests > 0 {
+        Some(
+            t!(
+                "Request queue rejections: %{count}",
+                count = control.rejected_requests
+            )
+            .into_owned(),
+        )
+    } else {
+        None
+    }
 }
 
 /// The status bar's red summary: the first unlocated message, translated.
@@ -70,6 +97,7 @@ pub(crate) fn unlocated_summary(state: &UiState) -> Option<String> {
         .iter()
         .find(|fault| fault.subject == GraphSubject::Graph)
         .map(|fault| t!(fault.cause.as_str()).into_owned())
+        .or_else(|| queue_degradation_summary(state))
         .or_else(|| unlocated_diagnostic(state))
 }
 
@@ -139,6 +167,9 @@ pub(crate) fn overlay(
                     )
                 })
                 .collect();
+            // The cumulative bounded-queue degradation facts ride the same
+            // channel: factual count rows after the faults.
+            rows.extend(degradation_rows(state));
             // The non-located diagnostics, first Some wins (the error
             // strip's old precedence).
             if let Some(error) = unlocated_diagnostic(state) {
@@ -222,4 +253,33 @@ fn fault_row(cause: String, hint: Option<String>) -> AnyElement {
         row = row.child(div().text_color(theme::TEXT).child(hint));
     }
     row.into_any_element()
+}
+
+/// The cumulative bounded-queue degradation rows: one factual count per
+/// saturated queue, rendered only when the count is nonzero. Cumulative by
+/// design — the degradation stays visible after the burst has passed.
+fn degradation_rows(state: &UiState) -> Vec<AnyElement> {
+    let control = &state.snapshot.control;
+    let mut rows = Vec::new();
+    if control.dropped_parameters > 0 {
+        rows.push(fault_row(
+            t!(
+                "Parameter updates dropped: %{count}",
+                count = control.dropped_parameters
+            )
+            .into_owned(),
+            None,
+        ));
+    }
+    if control.rejected_requests > 0 {
+        rows.push(fault_row(
+            t!(
+                "Request queue rejections: %{count}",
+                count = control.rejected_requests
+            )
+            .into_owned(),
+            None,
+        ));
+    }
+    rows
 }

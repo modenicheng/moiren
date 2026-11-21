@@ -190,6 +190,16 @@ pub struct ControlSummary {
     pub accepted_pending: usize,
     pub pending_gain_pan: Option<(f64, f64)>,
     pub last_result: Option<ControlReply>,
+    /// Cumulative live-parameter submissions dropped because the bounded
+    /// 64-slot queue was full. A factual degradation count, never reset:
+    /// the UI surfaces it so the bounded queue's silent fallback becomes
+    /// visible (audit 2026-11-20 observation 10).
+    pub dropped_parameters: u64,
+    /// Cumulative requests rejected because the 64-deep service queue was
+    /// full, counted at the enqueue failure and published with the next
+    /// snapshot. Ordinary requests and topic subscriptions share the queue,
+    /// so either kind's rejection lands here.
+    pub rejected_requests: u64,
 }
 /// Live progress of a starting session's native device opens (issue #105):
 /// how many device groups settled out of how many, plus one endpoint still

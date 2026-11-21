@@ -24,10 +24,20 @@ work beyond buffer IO, no logging. Startup and teardown (negotiation, buffer
 allocation, stream start/stop, diagnostics) run outside that phase on the same
 thread and may allocate.
 
+**Unproven invariant — fault paths (audit X11).** The zero-allocation
+guarantee is proven for *normal* paths only (rt-check allocator
+instrumentation). Fault and early-return branches on audio threads — the
+error-string construction behind `bridge.rs::unsupported` and the render
+failure mapping in `Pump::cycle`, plus post-start `log::debug!` sites in
+`engine_backend/owner.rs` — may allocate and may log. They stay for their
+diagnostic value: when they run, the stream is already dying. Reviews must
+not cite fault paths as proven allocation-free; the code sites carry the
+same marker comment.
+
 | Thread | Spawned in | Responsibility |
 |---|---|---|
-| `moiren-professional-master` | `engine_backend/owner.rs` `spawn` | Master native owner (WASAPI shared/exclusive or ASIO). Runs `Pump::cycle` — bridge ring refill, SRC, follower servo — and **`Engine::render` on this thread**; then `stream.wait`, the loop's only blocking call. |
-| `moiren-professional-device` | `engine_backend/owner.rs` `spawn` | Additional non-master native owners. Same loop, never borrows `Engine`: the follower pump renders silence resampled and servo-paced to the device rate. |
+| `moiren-professional-master` | `engine_backend/owner.rs` `start_worker` | Master native owner (WASAPI shared/exclusive or ASIO). Runs `Pump::cycle` — bridge ring refill, SRC, follower servo — and **`Engine::render` on this thread**; then `stream.wait`, the loop's only blocking call. |
+| `moiren-professional-device` | `engine_backend/owner.rs` `start_worker` | Additional non-master native owners. Same loop, never borrows `Engine`: the follower pump renders silence resampled and servo-paced to the device rate. |
 | ASIO driver callback thread | the third-party ASIO driver | Not created by Moiren. The code that runs on it is `asio/callback.rs`. |
 | `moiren-virtual-owner` | `virtual_owner/owner.rs` | Virtual transport owner for software-only graphs. Paces `Engine::render` against the virtual realtime clock (`virtual_owner/pacer.rs`, high-resolution waitable timer). |
 | `moiren-vad-pcm` | `vad/provider.rs` `VadSession::spawn` | One worker per VAD device session. Overlapped PCM IO against the VAD driver plus fixed-size PCM conversion; feeds the RT boundary objects. |
@@ -109,6 +119,39 @@ rules:
   bus is drained only by control threads (`signals.pump()` /
   `pump_if_due`), so no publication-side wakeup ever originates on a realtime
   thread.
+
+## Teardown and open bounds (issue #105)
+
+Every blocking wait on a control-side teardown or open path is bounded, and
+the bounds are layered:
+
+- **Open, per native device group** — 10 s (`OPEN_DEADLINE`,
+  `engine_backend.rs`): a wedged endpoint degrades to a null stream instead
+  of freezing session start.
+- **Teardown, per resource** — 2 s (`NATIVE_TEARDOWN_DEADLINE`, `lib.rs`):
+  bounds one worker join, one auxiliary join, one capture-session drop join,
+  and the ASIO detach reader barrier. A resource that misses its deadline is
+  abandoned (fenced + detached); its late tail unwinds on its own thread.
+- **Teardown, whole professional transport** — 4 × the per-resource deadline
+  (`teardown_budget`, `engine_backend/owner.rs`): one budget shared across
+  the serial worker and auxiliary joins, so many simultaneously wedged
+  drivers stretch Stop and app exit to the budget, not to
+  groups × per-resource deadline. Slow-but-alive teardowns finishing inside
+  their own deadlines never reach it.
+
+- **Open, process loopback** — the capture worker's startup handshake
+  (loopback activation, `Initialize`, `SetEventHandle`) is bounded at 10 s
+  (`STARTUP_HANDSHAKE_DEADLINE`, `capture/wasapi.rs`), equal to the native
+  open bound; a wedged loopback open degrades to a preparation error instead
+  of freezing `moiren-host-prepare`.
+- **Known open gap — virtual boundaries** — `virtual_io::prepare` honors
+  cancellation and the Windows VAD provider bounds each control operation at
+  5 s, but the pass as a whole has no wall-clock deadline (no hang mode is
+  known in the remaining in-memory work); see the comment at the gap.
+
+The abandonment semantics are uniform: bounded detection, unbounded
+recovery on the detached thread. What is knowingly not covered by an open
+deadline is recorded in the code where the gap lives.
 
 ## Shadow-compiled tests
 

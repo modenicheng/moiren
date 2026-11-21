@@ -306,6 +306,15 @@ pub(super) fn report(transferred_frames: usize, requested: usize) -> BoundaryRep
     }
 }
 
+/// UNPROVEN INVARIANT (audit X11): this helper allocates — `to_string`
+/// builds an owned error string — and several of its callers run on audio
+/// threads inside `Engine::render` or the owner pump. The crate's proven
+/// guarantee is *normal-path* zero allocation (pinned by the rt-check
+/// allocator instrumentation); these fault/early-return branches may
+/// allocate, because when they execute the stream is already dying and the
+/// diagnostic value of the message outweighs the allocation. Reviews must
+/// not cite fault paths as allocation-free. Do not call this on any path
+/// that can execute while the stream is healthy.
 pub(super) fn unsupported(error: impl std::fmt::Display) -> BackendError {
     BackendError::Unsupported(error.to_string())
 }

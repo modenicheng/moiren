@@ -17,6 +17,7 @@ use libloading::Library;
 pub mod abi;
 
 use crate::{
+    guard::guarded,
     instance::PluginInstance,
     module::{SharedModule, acquire_module},
     spec::{PluginDescriptor, PluginError, PluginFormat, PluginParamEvent, PluginParameterSpec},
@@ -531,36 +532,44 @@ impl PluginInstance for ClapInstance {
     }
 
     fn save_state(&self) -> Result<Option<Vec<u8>>, PluginError> {
-        let Some(ext) = self.state_ext else {
-            return Ok(None);
-        };
-        let mut sink = Vec::new();
-        let stream = ClapOstream {
-            ctx: std::ptr::from_mut(&mut sink).cast(),
-            write: ostream_write,
-        };
-        // The plugin is initialized; the stream points at a local Vec.
-        if !(unsafe { ext.save(self.plugin, &stream) }) {
-            return Err(PluginError::State("clap_state save returned false".into()));
-        }
-        Ok(Some(sink))
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        guarded(&self.descriptor.path, "clap_state save", || {
+            let Some(ext) = self.state_ext else {
+                return Ok(None);
+            };
+            let mut sink = Vec::new();
+            let stream = ClapOstream {
+                ctx: std::ptr::from_mut(&mut sink).cast(),
+                write: ostream_write,
+            };
+            // The plugin is initialized; the stream points at a local Vec.
+            if !(unsafe { ext.save(self.plugin, &stream) }) {
+                return Err(PluginError::State("clap_state save returned false".into()));
+            }
+            Ok(Some(sink))
+        })
+        .and_then(|outcome| outcome)
     }
 
     fn load_state(&mut self, state: &[u8]) -> Result<(), PluginError> {
-        let Some(ext) = self.state_ext else {
-            return Ok(());
-        };
-        let mut remaining = state;
-        let stream = ClapIstream {
-            ctx: std::ptr::from_mut(&mut remaining).cast(),
-            read: istream_read,
-        };
-        // The plugin is initialized; the stream points at the local
-        // remaining slice.
-        if !(unsafe { ext.load(self.plugin, &stream) }) {
-            return Err(PluginError::State("clap_state load returned false".into()));
-        }
-        Ok(())
+        // Control-side FFI: guarded so a plugin panic becomes an error.
+        guarded(&self.descriptor.path, "clap_state load", || {
+            let Some(ext) = self.state_ext else {
+                return Ok(());
+            };
+            let mut remaining = state;
+            let stream = ClapIstream {
+                ctx: std::ptr::from_mut(&mut remaining).cast(),
+                read: istream_read,
+            };
+            // The plugin is initialized; the stream points at the local
+            // remaining slice.
+            if !(unsafe { ext.load(self.plugin, &stream) }) {
+                return Err(PluginError::State("clap_state load returned false".into()));
+            }
+            Ok(())
+        })
+        .and_then(|outcome| outcome)
     }
 }
 

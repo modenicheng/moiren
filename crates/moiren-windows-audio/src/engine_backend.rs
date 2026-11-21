@@ -475,8 +475,10 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                 // removal and no re-plug (a missing sighting) has cleared the
                 // verdict yet. The first observation of a missing endpoint
                 // clears both verdicts: a re-plug re-created the device
-                // instance, so the next sighting may open promptly.
-                self.absence.poll(move |device| match probe(device) {
+                // instance, so the next sighting may open promptly. The
+                // check runs on the watch's own bounded probe thread (audit
+                // X9), never on this host control thread.
+                let check: absence::AbsenceCheck = Arc::new(move |device| match probe(device) {
                     Some(id) => {
                         !stuck.is_stuck(device.backend, &id)
                             && !runtime_absent.is_marked(device.backend, &device.selector, &id)
@@ -486,7 +488,8 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                         runtime_absent.clear_id(device.backend, device.native_id.as_deref());
                         false
                     }
-                })
+                });
+                self.absence.poll(check)
             })
     }
     fn prepare(
@@ -1653,6 +1656,14 @@ fn prepare_process<S: ProcessingSample>(
     transport: &mut Transport<S>,
     cancel: &CancellationToken,
 ) -> Result<(), BackendError> {
+    // Open-bound parity (issue #105, audit X13): `inspect_process` issues
+    // only non-pageable kernel queries (OpenProcess/GetProcessTimes — no
+    // known hang mode), and the worker's startup handshake — including the
+    // 10 s-bounded loopback activation, Initialize and SetEventHandle — is
+    // bounded by `STARTUP_HANDSHAKE_DEADLINE` in `capture::wasapi`, equal
+    // to this backend's `OPEN_DEADLINE`. A wedged loopback open therefore
+    // degrades to a preparation error instead of freezing
+    // `moiren-host-prepare`.
     let target = crate::process_loopback::inspect_process(identity.0).map_err(unsupported)?;
     if target.creation_time_100ns != identity.1 {
         return Err(BackendError::ResourceUnavailable(
