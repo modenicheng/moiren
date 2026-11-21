@@ -440,8 +440,11 @@ impl SpectrumBridge {
         let Some(active) = snapshot.active else {
             return;
         };
+        // Sync errors are complete causes already: register/unregister
+        // failures arrive as fault_causes catalog keys (translated at
+        // paint), the relay's own infra failures carry their context here.
         if let Err(error) = self.sync_nodes(c, &active) {
-            c.graph.record_error(format!("Node spectra: {error}"));
+            c.graph.record_error(error);
             return;
         }
         // The publishers' demand snapshots ride the binding table; the
@@ -526,26 +529,28 @@ impl SpectrumBridge {
                 continue;
             };
             let analysis = SpectrumAnalysis::new(shape.channels, shape.fft_size)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Node spectra: {error}"))?;
             let key = self
                 .control
                 .new_binding()
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Node spectra: {error}"))?;
             let publisher = self
                 .control
                 .prepare(topic, key)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Node spectra: {error}"))?;
             let update = self
                 .control
                 .prepare_update(&[publisher.erase()])
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Node spectra: {error}"))?;
             self.spectra.push(SpectrumSlot {
                 node,
                 shape,
                 key,
                 topic: topic.clone(),
                 publisher,
-                operation: update.op_bindings(key).map_err(|error| error.to_string())?,
+                operation: update
+                    .op_bindings(key)
+                    .map_err(|error| format!("Node spectra: {error}"))?,
                 subscription: None,
                 sequence: 0,
                 analysis,
@@ -568,16 +573,16 @@ impl SpectrumBridge {
         let update = self
             .control
             .prepare_update(&bindings)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("Node spectra: {error}"))?;
         for slot in &mut self.spectra {
             slot.operation = update
                 .op_bindings(slot.key)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| format!("Node spectra: {error}"))?;
         }
         drop(
             self.host
                 .activate(update)
-                .map_err(|error| error.error.to_string())?,
+                .map_err(|error| format!("Node spectra: {}", error.error))?,
         );
         Ok(())
     }

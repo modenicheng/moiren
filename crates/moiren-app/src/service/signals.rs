@@ -146,7 +146,9 @@ impl SignalService {
     /// running configuration publishes. A node whose shape changed (FFT
     /// size, channel count) or that left the graph is unregistered first:
     /// the fresh registration is a new identity, which is how subscribers
-    /// learn to resubscribe at the right capacity.
+    /// learn to resubscribe at the right capacity. The error string is a
+    /// complete fault cause — a `fault_causes` catalog key translated at
+    /// paint, not raw error Display text.
     pub(super) fn prepare_node_spectra(
         &mut self,
         shapes: &BTreeMap<NodeId, SpectrumShape>,
@@ -162,7 +164,7 @@ impl SignalService {
             let topic = self.topics.node_spectra[&id].clone();
             self.bus
                 .unregister(&topic)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| super::fault_causes::spectrum_unregistration(&error).to_owned())?;
             self.topics.node_spectra.remove(&id);
             self.spectrum_shapes.remove(&id);
         }
@@ -188,7 +190,7 @@ impl SignalService {
                     },
                     SPECTRUM_STREAM_DEPTH,
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| super::fault_causes::spectrum_registration(&error).to_owned())?;
             self.topics.node_spectra.insert(id, topic);
             self.spectrum_shapes.insert(id, shape);
         }
