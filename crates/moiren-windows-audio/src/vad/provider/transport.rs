@@ -93,7 +93,16 @@ pub(super) fn poll_with_started_transport<C: EndpointControl>(
     // owner has been created, every subsequent change remains a real reset.
     let initial_stream_start = !transport_started;
     if queried.stream_generation() != previous.stream_generation() && !initial_stream_start {
+        state.stream_revoke_pending.store(true, Ordering::Relaxed);
         state.revoke();
+    }
+    let admitted = state.admitted();
+    // After a native stream change, leave gate reconciliation to the
+    // lifecycle poll that owns re-admission. Closing from this worker races
+    // both that poll and further native transitions. Local admission and
+    // the reset below already fence old PCM while the observed gate is open.
+    if admitted || !queried.gate_open() {
+        state.stream_revoke_pending.store(false, Ordering::Relaxed);
     }
     if queried.stream_generation() != previous.stream_generation()
         || queried.gate_epoch() != previous.gate_epoch()
@@ -103,12 +112,14 @@ pub(super) fn poll_with_started_transport<C: EndpointControl>(
     {
         log::debug!(
             target: "moiren::audio::vad",
-            "event=transport_observed endpoint={:?} previous={previous:?} queried={queried:?} admitted_before={admitted_before} admitted_after={}",
+            "event=transport_observed endpoint={:?} previous={previous:?} queried={queried:?} admitted_before={admitted_before} admitted_after={admitted}",
             queried.key(),
-            state.admitted(),
         );
     }
-    let result = if queried.gate_open() && !state.admitted() {
+    let result = if queried.gate_open()
+        && !state.admitted()
+        && !state.stream_revoke_pending.load(Ordering::Relaxed)
+    {
         log::debug!(
             target: "moiren::audio::vad",
             "event=transport_gate_close endpoint={:?} reason=not_admitted previous={previous:?} queried={queried:?} admitted_before={admitted_before}",

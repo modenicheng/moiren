@@ -678,6 +678,7 @@ struct SessionState {
     drained: std::sync::atomic::AtomicBool,
     admitted_ticket: AtomicU64,
     admitted_revision: AtomicU64,
+    stream_revoke_pending: std::sync::atomic::AtomicBool,
     admission: Arc<Admission>,
     telemetry: Arc<PcmTelemetry>,
 }
@@ -700,6 +701,7 @@ impl SessionState {
             drained: std::sync::atomic::AtomicBool::new(false),
             admitted_ticket: AtomicU64::new(0),
             admitted_revision: AtomicU64::new(0),
+            stream_revoke_pending: std::sync::atomic::AtomicBool::new(false),
             admission,
             telemetry: Arc::new(PcmTelemetry::default()),
         }

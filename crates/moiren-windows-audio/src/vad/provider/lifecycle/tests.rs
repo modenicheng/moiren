@@ -990,32 +990,47 @@ fn first_stream_start_after_gate_admission_does_not_count_as_recovery() {
 }
 
 #[test]
-fn admitted_worker_keeps_gate_but_stream_restart_revokes_and_resets() {
+fn stream_restart_revokes_worker_and_waits_for_lifecycle_readmission() {
     let admission = Arc::new(Admission::new());
-    let session = SessionState::new(admission.clone());
-    session.active.store(true, Ordering::Release);
-    session
-        .admitted_ticket
-        .store(admission.set(Some(9)), Ordering::Release);
-    session.admitted_revision.store(9, Ordering::Release);
-    let mut control = Fake {
-        current: snapshot(PdoState::Present, 3, 5, true),
-        ..Default::default()
-    };
-    let previous = control.current;
-    let (current, changed) =
-        super::super::transport::poll(&mut control, previous, &session).unwrap();
-    assert!(!changed);
-    assert!(current.gate_open());
-    assert!(control.gates.is_empty());
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let session = prepared(&mut lifecycle, admission.clone());
+    let ticket = admission.set(Some(9));
+    lifecycle
+        .gate(id(), [11, 7, 11, 3, 5], true, 9, ticket, &admission)
+        .unwrap();
+    let mut current = lifecycle.control.current;
 
-    control.current = snapshot(PdoState::Present, 4, 6, true);
-    let (current, changed) =
-        super::super::transport::poll(&mut control, current, &session).unwrap();
-    assert!(changed);
-    assert!(!current.gate_open());
+    // Another native client generation can publish after each QUERY. A
+    // competing worker close would fail its gate comparison.
+    lifecycle.control.fail_close = true;
+    for (stream, gate) in [(4, 8), (5, 11)] {
+        lifecycle.control.current = snapshot(PdoState::Present, stream, gate, true);
+        let (observed, changed) =
+            transport::poll(&mut lifecycle.control, current, &session).unwrap();
+        assert!(changed);
+        assert!(observed.gate_open());
+        assert!(!session.admitted());
+        assert!(session.prepared());
+        assert!(!transport::playback_ready(observed, &session, true));
+        current = observed;
+    }
+    assert_eq!(
+        transport::poll(&mut lifecycle.control, current, &session).unwrap(),
+        (current, false)
+    );
+    assert_eq!(session.reset_epoch.load(Ordering::Acquire), 2);
+    assert_eq!(lifecycle.control.gates, [true]);
+
+    lifecycle.control.fail_close = false;
+    let closed = lifecycle.poll()[0].snapshot.unwrap();
+    assert!(!closed.gate_open());
     assert!(!session.admitted());
-    assert_eq!(session.reset_epoch.load(Ordering::Acquire), 1);
+    lifecycle
+        .gate(id(), stamp(closed), true, 9, ticket, &admission)
+        .unwrap();
+    assert!(session.admitted());
+    assert_eq!(lifecycle.control.gates, [true, false, true]);
 }
 
 #[test]
