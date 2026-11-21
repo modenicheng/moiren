@@ -1047,6 +1047,101 @@ fn a_paused_fader_drag_lands_its_last_value_at_the_next_frame(cx: &mut TestAppCo
     finish_service(runtime);
 }
 
+/// A fader drag whose view unmounts mid-gesture must not pin the write-back
+/// stand-down (issue #81). The kit delivers `SliderEvent::Release` only
+/// through the slider element's own mouse-up listeners, so a strip that
+/// unmounts while the button stays held — here a page switch to Graph —
+/// never sees the closing mouse-up and nothing synthesizes a Release for it.
+/// `SliderSlot.dragging` then sticks true: the snapshot write-back in
+/// `sync_slider_range` stays suppressed, the thumb freezes at the drag value
+/// and edits to the same gain from other surfaces stop following the strip,
+/// until the user drags that fader again. The page switch must cancel the
+/// drag exactly as it cancels canvas gestures.
+#[gpui_kit::test]
+fn a_fader_drag_interrupted_by_a_page_switch_reopens_the_write_back(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.workspace = WorkspaceView::Page(Page::Mixer);
+        shell.chrome.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_panels(cx);
+    let node = view.update(cx, |shell, _| shell.mixer.presentation.order[0]);
+    let press = view.update(cx, |shell, cx| {
+        let slider = shell.mixer.presentation.faders[&node].state.read(cx);
+        let bounds = slider.bounds();
+        point(
+            bounds.center().x,
+            bounds.top() + bounds.size.height * (1. - slider.value().end()),
+        )
+    });
+    cx.simulate_mouse_down(press, MouseButton::Left, Modifiers::default());
+    for travel in [12., 24.] {
+        cx.simulate_mouse_move(
+            press + point(px(0.), px(travel)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    view.read_with(cx, |shell, _| {
+        assert!(
+            shell.mixer.presentation.faders[&node].dragging.get(),
+            "the drag must be in flight before the page switch"
+        );
+    });
+    // Switch pages while the button stays held: the strip unmounts, and the
+    // kit's element-scoped release listeners unmount with it.
+    view.update(cx, |shell, cx| shell.set_page(Page::Graph, cx));
+    cx.update(|window, cx| window.render_frame(cx));
+    // The closing mouse-up lands wherever the pointer now is — the Graph
+    // page. The slot must not keep its drag armed: nothing else can clear
+    // the flag, and the write-back stays suppressed across every page.
+    cx.simulate_mouse_up(
+        press + point(px(0.), px(24.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+    });
+    view.read_with(cx, |shell, _| {
+        assert!(
+            !shell.mixer.presentation.faders[&node].dragging.get(),
+            "a drag whose view unmounted must not keep the write-back suppressed"
+        );
+    });
+    // Back on the Mixer, the strip must follow the snapshot again: an edit
+    // through the service (the tray flyout and inspector paths edit the same
+    // gain this way) moves the thumb once the write-back reopened.
+    view.update(cx, |shell, cx| shell.set_page(Page::Mixer, cx));
+    poll(&view, cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_mixer(node, |mixer| mixer.gain = 0.25)
+        });
+    });
+    poll(&view, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let (thumb, expected) = view.read_with(cx, |shell, cx| {
+        (
+            shell.mixer.presentation.faders[&node]
+                .state
+                .read(cx)
+                .value()
+                .end(),
+            1. - FaderScale::position(0.25),
+        )
+    });
+    assert!(
+        (thumb - expected).abs() < 0.0001,
+        "the thumb must follow the published gain again, got {thumb} vs {expected}"
+    );
+    finish_service(runtime);
+}
+
 /// A touchpad pan over a fader must repaint the thumb on every frame
 /// (design 22 D0). The pan writes the slider state, and that notification
 /// rebuilds the strip's cached panel. The 33 ms nested-rebuild throttle
