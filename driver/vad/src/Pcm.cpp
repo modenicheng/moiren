@@ -51,14 +51,18 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[index];
     const auto& header = context->Header;
+    const auto intent = capture ? MOIREN_VAD_INTENT_MICROPHONE : MOIREN_VAD_INTENT_PLAYBACK;
+    const bool matchesEndpoint = slot.Channels == header.Channels && slot.Intent == intent;
     NTSTATUS status = STATUS_SUCCESS;
     if (InterlockedCompareExchange(&shared->PcmOnline, 0, 0) == 0) {
         status = STATUS_DEVICE_REMOVED;
     } else if (!vad::CanQueuePcm(slot, header)) {
-        status = STATUS_REVISION_MISMATCH;
-    } else if (slot.SampleFormat != header.SampleFormat ||
-        slot.PacketFrames != header.Frames || slot.Channels != header.Channels ||
-        slot.Intent != (capture ? MOIREN_VAD_INTENT_MICROPHONE : MOIREN_VAD_INTENT_PLAYBACK)) {
+        // An overlapped request can reach this callback after native ACX
+        // advances the stamp. Cancel the retired work before claiming quota.
+        status = matchesEndpoint && vad::RetiredPcmStamp(slot, header)
+            ? STATUS_CANCELLED : STATUS_REVISION_MISMATCH;
+    } else if (!matchesEndpoint || slot.SampleFormat != header.SampleFormat ||
+        slot.PacketFrames != header.Frames) {
         status = STATUS_INVALID_PARAMETER;
     } else if (slot.PendingRequests >= MOIREN_VAD_REQUEST_SLOTS) {
         status = STATUS_QUOTA_EXCEEDED;
@@ -354,7 +358,7 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                 // The dequeued request was admitted before this exact
                 // endpoint advanced its fence. No bytes can cross the
                 // fence, and the caller can observe the cancellation.
-                if (admitted && vad::RetiredPcmAdmission(slot, header)) {
+                if (admitted && vad::RetiredPcmStamp(slot, header)) {
                     completion.Status = STATUS_CANCELLED;
                 }
                 unservedReasons |= vad::UnservedNoCurrent;

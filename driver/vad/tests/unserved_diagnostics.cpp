@@ -278,9 +278,9 @@ static void ProductionUnserved()
         "pre-forward evidence is explicitly an attempt, even when forward fails");
     ++SubmitHeader.Sequence;
     --SubmitHeader.GateEpoch;
-    Check(VadPcmSubmit(&shared, &submit, IOCTL_MOIREN_VAD_WRITE_PCM) == STATUS_REVISION_MISMATCH &&
+    Check(VadPcmSubmit(&shared, &submit, IOCTL_MOIREN_VAD_WRITE_PCM) == STATUS_CANCELLED &&
         shared.UnservedDiagnostics[0].LatestWrite.Sequence == 43,
-        "real admission rejects retired gate without contaminating latest WRITE");
+        "real admission cancels retired gate without contaminating latest WRITE");
 }
 
 int main()

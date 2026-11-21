@@ -718,8 +718,31 @@ static void ReleaseAfterStop(ULONG intent, bool timerDriven)
     VAD_PCM_REQUEST late = {};
     late.Input = request.Input;
     late.Code = request.Code;
+    late.Counted = 0;
+    Check(VadPcmSubmit(&child, &late, late.Code) == STATUS_CANCELLED &&
+        late.Counted == 0 && queue.Count == 0 && slot.PendingRequests == 0,
+        "a former valid stamp retired before reservation cancels without queue ownership");
+
+    late.Input = request.Input;
+    ++late.Input.SessionEpoch;
     Check(VadPcmSubmit(&child, &late, late.Code) == STATUS_REVISION_MISMATCH,
-        "Closed rejects subsequent requests even with the former valid shape");
+        "a retired stamp from another session remains a mismatch");
+
+    late.Input = request.Input;
+    late.Input.Channels = 1;
+    Check(VadPcmSubmit(&child, &late, late.Code) == STATUS_REVISION_MISMATCH,
+        "a retired stamp with the wrong channel count remains a mismatch");
+
+    late.Input = request.Input;
+    late.Input.StreamGeneration = slot.StreamGeneration + 1;
+    Check(VadPcmSubmit(&child, &late, late.Code) == STATUS_REVISION_MISMATCH,
+        "an older gate with a future stream remains a mismatch");
+
+    late.Input = request.Input;
+    late.Input.GateEpoch = slot.AdmissionGeneration;
+    late.Input.StreamGeneration = slot.StreamGeneration;
+    Check(VadPcmSubmit(&child, &late, late.Code) == STATUS_REVISION_MISMATCH,
+        "an ineligible current stamp remains a mismatch");
 }
 
 static void GuardPaths()

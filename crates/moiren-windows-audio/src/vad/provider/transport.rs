@@ -167,7 +167,7 @@ pub(super) fn after_io_error<C: EndpointControl>(
     state: &SessionState,
     error: BackendError,
 ) -> Result<super::super::EndpointSnapshot, BackendError> {
-    // Only a collected terminal PCM cancellation can be explained by a gate
+    // Only a terminal PCM cancellation can be explained by a gate
     // transition or explicit stop. A device/protocol/timeout fault stays a
     // fault even if shutdown races it; never turn all retirement errors green.
     if error != BackendError::Cancelled {

@@ -94,24 +94,20 @@ impl Slot {
         }
         self.pending = false;
         book.finish(ticket).map_err(slot_error)?;
-        if error.code() == ERROR_OPERATION_ABORTED.to_hresult() {
-            // Terminal cancellation releases this ticket only. It is neither
-            // PCM delivery nor permission to forgive a running owner's abort;
-            // the transport must still check its stop/admission/epoch state.
+        if writing_completion_timeout(error.code(), writing) {
+            return Ok(Some(PcmCompletion::CaptureDropped { stamp: self.stamp }));
+        }
+        let failure = pcm_io_error("GetOverlappedResult(VAD PCM)", error);
+        if matches!(failure, ClientError::Cancelled) {
+            // Cancellation releases only this ticket. The transport still
+            // needs its stop intent or an observed admission/epoch change.
             log::debug!(
                 target: "moiren::audio::vad",
                 "event=pcm_terminal_cancel ticket={ticket:?} writing={writing} remaining_pending={}",
                 book.pending(),
             );
-            return Err(ClientError::Cancelled);
         }
-        if writing_completion_timeout(error.code(), writing) {
-            return Ok(Some(PcmCompletion::CaptureDropped { stamp: self.stamp }));
-        }
-        if kernel_quota_rejection(error.code()) {
-            return Err(ClientError::KernelPcmQuotaFull);
-        }
-        Err(ClientError::windows("GetOverlappedResult(VAD PCM)", error))
+        Err(failure)
     }
 }
 
@@ -280,19 +276,19 @@ impl PcmOwner {
         if let Err(error) = submitted
             && error.code() != ERROR_IO_PENDING.to_hresult()
         {
-            if kernel_quota_rejection(error.code()) {
-                return Err(ClientError::KernelPcmQuotaFull);
+            let failure = pcm_io_error("DeviceIoControl(VAD PCM)", error);
+            if let ClientError::Windows { source, .. } = &failure {
+                log::error!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_submit_fault ticket={ticket:?} writing={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={source}",
+                    pcm.is_some(),
+                    self.shape,
+                    slot.stamp,
+                    self.book.pending(),
+                    source.code().0,
+                );
             }
-            log::error!(
-                target: "moiren::audio::vad",
-                "event=pcm_submit_fault ticket={ticket:?} writing={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={error}",
-                pcm.is_some(),
-                self.shape,
-                slot.stamp,
-                self.book.pending(),
-                error.code().0,
-            );
-            return Err(ClientError::windows("DeviceIoControl(VAD PCM)", error));
+            return Err(failure);
         }
         // Immediate completion also needs collection before slot reuse.
         slot.pending = true;
@@ -627,6 +623,19 @@ fn kernel_quota_rejection(code: HRESULT) -> bool {
     code == ERROR_NOT_ENOUGH_QUOTA.to_hresult()
 }
 
+// The driver can complete a retired stamp before DeviceIoControl returns or
+// after the caller begins collecting its overlapped ticket.
+fn pcm_io_error(operation: &'static str, error: windows::core::Error) -> ClientError {
+    let code = error.code();
+    if code == ERROR_OPERATION_ABORTED.to_hresult() {
+        ClientError::Cancelled
+    } else if kernel_quota_rejection(code) {
+        ClientError::KernelPcmQuotaFull
+    } else {
+        ClientError::windows(operation, error)
+    }
+}
+
 impl Drop for PcmOwner {
     fn drop(&mut self) {
         self.cancel_all();
@@ -851,6 +860,26 @@ mod tests {
                 "peer requests still need their own drain"
             );
         }
+    }
+
+    #[test]
+    fn pcm_cancel_is_typed_when_submission_completes_synchronously() {
+        use windows::Win32::Foundation::{ERROR_REVISION_MISMATCH, STATUS_CANCELLED};
+
+        // SAFETY: pure OS status translation with no device or ticket involved.
+        let abort = HRESULT::from_win32(unsafe { RtlNtStatusToDosError(STATUS_CANCELLED) });
+        assert_eq!(abort, ERROR_OPERATION_ABORTED.to_hresult());
+        let operation = "DeviceIoControl(VAD PCM)";
+        assert!(matches!(
+            pcm_io_error(operation, windows::core::Error::from_hresult(abort)),
+            ClientError::Cancelled
+        ));
+        let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+        assert!(matches!(
+            pcm_io_error(operation, windows::core::Error::from_hresult(mismatch)),
+            ClientError::Windows { operation: reported, source }
+                if reported == operation && source.code() == mismatch
+        ));
     }
 
     #[test]

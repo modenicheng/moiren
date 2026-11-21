@@ -167,7 +167,7 @@ inline bool SameStream(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
         slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
 }
 
-inline bool RetiredPcmAdmission(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
+inline bool RetiredPcmStamp(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
 {
     return slot.Id != 0 && slot.Id == request.EndpointId &&
         slot.Id == request.EndpointGeneration && slot.Session == request.SessionEpoch &&
