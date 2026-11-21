@@ -452,6 +452,7 @@ impl PcmOwner {
             &mut self.slots,
             &mut self.book,
             &mut self.shutdown_faults,
+            Some(self.shape),
             |slot| {
                 let storage = slot.storage.get();
                 let mut returned = 0;
@@ -550,6 +551,7 @@ fn shutdown_slots(
     slots: &mut [Slot; REQUEST_SLOTS],
     book: &mut SlotBook,
     faults: &mut ShutdownFaults,
+    submitted_shape: Option<PcmShape>,
     mut collect: impl FnMut(&mut Slot) -> windows::core::Result<()>,
 ) -> Result<(), ClientError> {
     for (index, slot) in slots.iter_mut().enumerate() {
@@ -571,7 +573,8 @@ fn shutdown_slots(
                 faults.codes[index] = Some(error.code());
                 log::warn!(
                     target: "moiren::audio::vad",
-                    "event=pcm_shutdown_terminal_fault slot={index} error={error:?}",
+                    "event=pcm_shutdown_terminal_fault slot={index} error={error:?} submitted_shape={submitted_shape:?} stamp={:?}",
+                    slot.stamp,
                 );
             }
         }
@@ -741,7 +744,7 @@ mod tests {
             ERROR_ACCESS_DENIED.to_hresult(),
         ];
         let mut calls = 0;
-        let result = shutdown_slots(&mut slots, &mut book, &mut faults, |_| {
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
             let index = calls;
             calls += 1;
             if index < codes.len() {
@@ -775,7 +778,7 @@ mod tests {
             faults.error().is_some(),
             "fault evidence survives a later drain probe"
         );
-        let result = shutdown_slots(&mut slots, &mut book, &mut faults, |_| {
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
             panic!("already drained")
         });
         assert!(
@@ -795,7 +798,7 @@ mod tests {
         }
         let mut faults = ShutdownFaults::default();
         let mut calls = 0;
-        let result = shutdown_slots(&mut slots, &mut book, &mut faults, |_| {
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
             let code = match calls {
                 0 => ERROR_IO_INCOMPLETE.to_hresult(),
                 1 => ERROR_DEVICE_NOT_CONNECTED.to_hresult(),
@@ -810,7 +813,7 @@ mod tests {
         assert!(slots[0].pending && book.check(tickets[0]).is_ok());
         assert!(slots[1..].iter().all(|slot| !slot.pending));
         assert!(faults.error().is_some());
-        let result = shutdown_slots(&mut slots, &mut book, &mut faults, |_| {
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
             Err(windows::core::Error::from_hresult(
                 ERROR_OPERATION_ABORTED.to_hresult(),
             ))
