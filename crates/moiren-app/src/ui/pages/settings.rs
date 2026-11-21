@@ -629,6 +629,12 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let snapshot = &state.snapshot;
     let requested = &snapshot.audio_settings;
     let running = snapshot.phase == SessionPhase::Running;
+    // The control-feedback and project-message rows change with no publish
+    // behind them (a dispatch in flight, a quiet save finishing), so both
+    // ride the SettingsKey. Their sentences also travel as aria labels on
+    // observed rows — the cache tests' paint witness, the export help
+    // row's precedent.
+    let feedback = crate::ui::presentation::control_feedback(snapshot, state.pending_request);
     let requested_column = div()
         .flex_1()
         .min_w_0()
@@ -721,10 +727,13 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                         apps = snapshot.catalog.processes.len()
                     ),
                 )]))
-                .child(label(crate::ui::presentation::control_feedback(
-                    snapshot,
-                    state.pending_request,
-                )))
+                .child(
+                    div()
+                        .id("settings-control-feedback")
+                        .aria_label(feedback.clone())
+                        .child(label(feedback))
+                        .gpui_test_observe(),
+                )
                 .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
                     view.child(
                         div()
@@ -735,7 +744,14 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     )
                 })
                 .when_some(shell.project_io.message.clone(), |view, message| {
-                    view.child(label(project::message_text(&message)))
+                    let text = project::message_text(&message);
+                    view.child(
+                        div()
+                            .id("settings-project-message")
+                            .aria_label(text.clone())
+                            .child(label(text))
+                            .gpui_test_observe(),
+                    )
                 }),
         ))
         .child(
