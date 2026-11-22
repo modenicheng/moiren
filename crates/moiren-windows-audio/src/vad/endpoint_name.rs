@@ -110,6 +110,12 @@ impl NameObserver {
                 .collect();
             let results = reader.read(&requests);
             let observed_at = clock.now();
+            log::trace!(
+                target: "moiren::audio::vad::name",
+                "event=endpoint_names_read requests={} elapsed_us={}",
+                requests.len(),
+                observed_at.saturating_sub(now).as_micros(),
+            );
             for (index, (endpoint_id, identity, _, _)) in pending.into_iter().enumerate() {
                 let result = results
                     .get(index)
@@ -194,28 +200,18 @@ struct Candidate {
     intent: super::Intent,
 }
 
-/// Outcome of deciding whether a failed enumeration candidate belongs to the
-/// owned VAD device. `Undecidable` means the optional identity lookup itself
-/// failed; such an endpoint stays unattributed and never fails the name read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CandidateOwnership {
-    Owned,
-    NotOwned,
-    Undecidable,
-}
-
-/// Join the errors of enumeration candidates that are confirmed owned. The
-/// exact-identity `select` below remains the only source of a successful name;
-/// an undecidable hint must not turn into a false observation error about the
-/// attribution machinery itself.
-pub(super) fn owned_candidate_errors(
-    candidates: &[(u32, String, CandidateOwnership)],
+/// A failed candidate can be attributed using an adapter instance already
+/// read during the scan. An unknown instance cannot fail another name lookup.
+fn owned_candidate_errors<'a>(
+    candidates: impl Iterator<Item = (u32, &'a str, Option<&'a str>)>,
+    stable_id: StableEndpointId,
     reported_limit: usize,
 ) -> Vec<String> {
+    let stable = stable_id.to_string();
     let mut reports = Vec::new();
     let mut omitted = 0;
-    for (index, error, ownership) in candidates.iter() {
-        if *ownership != CandidateOwnership::Owned {
+    for (index, error, raw_instance) in candidates {
+        if !raw_instance.is_some_and(|instance| raw_instance_has_identity(instance, &stable)) {
             continue;
         }
         if reports.len() < reported_limit {
@@ -238,9 +234,10 @@ fn select<'a>(
     intent: super::Intent,
     root: &str,
 ) -> Result<&'a Candidate, String> {
+    let stable = stable_id.to_string();
     let stable_matches: Vec<_> = candidates
         .iter()
-        .filter(|candidate| raw_instance_has_identity(&candidate.raw_instance, stable_id))
+        .filter(|candidate| raw_instance_has_identity(&candidate.raw_instance, &stable))
         .collect();
     let mut matches = stable_matches.iter().copied().filter(|candidate| {
         candidate.root_instance.eq_ignore_ascii_case(root) && candidate.intent == intent
@@ -268,7 +265,7 @@ fn select<'a>(
     Ok(first)
 }
 
-fn raw_instance_has_identity(raw_instance: &str, stable_id: StableEndpointId) -> bool {
+fn raw_instance_has_identity(raw_instance: &str, stable_id: &str) -> bool {
     let Some((hardware_id, instance)) = raw_instance.rsplit_once('\\') else {
         return false;
     };
@@ -276,7 +273,7 @@ fn raw_instance_has_identity(raw_instance: &str, stable_id: StableEndpointId) ->
         && instance
             .rsplit('&')
             .next()
-            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&stable_id.to_string()))
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(stable_id))
 }
 
 #[cfg(test)]
@@ -402,47 +399,47 @@ mod tests {
     }
 
     #[test]
-    fn undecidable_ownership_hints_are_not_reported_as_observation_errors() {
-        // Regression: a failing optional identity lookup (for example
-        // GetDevice(error attribution) 0xE0000225 on a removing endpoint) used
-        // to abort the whole name read; it must stay unattributed instead.
-        let hints = vec![
+    fn failures_without_an_owned_adapter_instance_stay_unattributed() {
+        let stable = StableEndpointId::from_virtual_endpoint_id(id(0x42));
+        let unrelated = format!(r"OTHER\VAD_RAW\6&opaque&{stable}");
+        let different = candidate(
+            StableEndpointId::from_virtual_endpoint_id(id(0x43)),
+            ROOT,
+            Intent::Playback,
+            "other endpoint",
+        );
+        let failures = [
+            (0, "adapter property failed", None),
+            (1, "devnode lookup failed", Some(unrelated.as_str())),
             (
-                0,
-                "topology walk failed".into(),
-                super::CandidateOwnership::Undecidable,
-            ),
-            (
-                1,
-                "adapter GetDevice failed".into(),
-                super::CandidateOwnership::NotOwned,
+                2,
+                "devnode lookup failed",
+                Some(different.raw_instance.as_str()),
             ),
         ];
         assert_eq!(
-            super::owned_candidate_errors(&hints, super::MAX_REPORTED_OWNED_ERRORS),
+            owned_candidate_errors(failures.into_iter(), stable, MAX_REPORTED_OWNED_ERRORS),
             Vec::<String>::new()
         );
     }
 
     #[test]
     fn confirmed_owned_candidate_errors_are_attributed_with_index_and_limit() {
-        let hints = vec![
+        let stable = StableEndpointId::from_virtual_endpoint_id(id(0x42));
+        let owned = candidate(stable, ROOT, Intent::Playback, "owned");
+        let failures = [
             (
                 0,
-                "connector count is 3, expected 1".into(),
-                super::CandidateOwnership::Owned,
+                "devnode lookup failed",
+                Some(owned.raw_instance.as_str()),
             ),
-            (1, "unrelated".into(), super::CandidateOwnership::NotOwned),
-            (
-                2,
-                "adapter property missing".into(),
-                super::CandidateOwnership::Owned,
-            ),
+            (1, "topology unavailable", None),
+            (2, "root lookup failed", Some(owned.raw_instance.as_str())),
         ];
         assert_eq!(
-            super::owned_candidate_errors(&hints, 1),
+            owned_candidate_errors(failures.into_iter(), stable, 1),
             vec![
-                "MMDevice index 0: connector count is 3, expected 1".to_owned(),
+                "MMDevice index 0: devnode lookup failed".to_owned(),
                 "1 additional owned endpoint topology errors omitted".to_owned(),
             ]
         );

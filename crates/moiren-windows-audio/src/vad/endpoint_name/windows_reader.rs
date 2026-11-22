@@ -127,7 +127,7 @@ impl Default for WindowsObserverClock {
 }
 
 struct CandidateError {
-    device: IMMDevice,
+    raw_instance: Option<String>,
     intent: super::super::Intent,
     index: u32,
     error: String,
@@ -164,14 +164,9 @@ fn enumerate_candidates(
         for index in 0..count {
             let device = unsafe { devices.Item(index) }
                 .map_err(|error| hresult(&format!("IMMDeviceCollection::Item({index})"), &error))?;
-            match candidate(enumerator, &device, intent) {
+            match candidate(enumerator, &device, intent, index) {
                 Ok(candidate) => candidates.push(candidate),
-                Err(error) => candidate_errors.push(CandidateError {
-                    device,
-                    intent,
-                    index,
-                    error,
-                }),
+                Err(error) => candidate_errors.push(error),
             }
         }
     }
@@ -187,30 +182,20 @@ fn read_name(
     intent: super::super::Intent,
     root: &str,
 ) -> Result<EndpointNameRead, String> {
-    // Attribute enumeration failures only when ownership is confirmed. A hint
-    // that itself fails (for example a removed endpoint whose connected-to
-    // device no longer resolves through GetDevice) stays undecidable: reporting
-    // the hint's own HRESULT here would mask both the candidate error and the
-    // exact-endpoint name read below with an error about the attribution path.
-    let hints: Vec<(u32, String, super::CandidateOwnership)> = candidate_errors
-        .iter()
-        .filter(|candidate_error| candidate_error.intent == intent)
-        .map(|candidate_error| {
-            let ownership =
-                match owned_identity_hint(enumerator, &candidate_error.device, stable_id) {
-                    Ok(owned) if owned => super::CandidateOwnership::Owned,
-                    Ok(_) => super::CandidateOwnership::NotOwned,
-                    Err(_) => super::CandidateOwnership::Undecidable,
-                };
-            (
-                candidate_error.index,
-                candidate_error.error.clone(),
-                ownership,
-            )
-        })
-        .collect();
-    let owned_candidate_errors =
-        super::owned_candidate_errors(&hints, super::MAX_REPORTED_OWNED_ERRORS);
+    let owned_candidate_errors = super::owned_candidate_errors(
+        candidate_errors
+            .iter()
+            .filter(|failure| failure.intent == intent)
+            .map(|failure| {
+                (
+                    failure.index,
+                    failure.error.as_str(),
+                    failure.raw_instance.as_deref(),
+                )
+            }),
+        stable_id,
+        super::MAX_REPORTED_OWNED_ERRORS,
+    );
     if !owned_candidate_errors.is_empty() {
         return Err(owned_candidate_errors.join("; "));
     }
@@ -239,62 +224,51 @@ fn read_name(
     })
 }
 
-fn instance_has_stable_suffix(instance: &str, stable_id: super::super::StableEndpointId) -> bool {
-    let stable_text = stable_id.to_string();
-    instance
-        .rsplit('&')
-        .next()
-        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&stable_text))
-}
-
-fn owned_identity_hint(
-    enumerator: &IMMDeviceEnumerator,
-    device: &IMMDevice,
-    stable_id: super::super::StableEndpointId,
-) -> Result<bool, String> {
-    let topology: IDeviceTopology = unsafe { device.Activate(CLSCTX_ALL, None) }
-        .map_err(|error| hresult("IMMDevice::Activate(error attribution)", &error))?;
-    let count = unsafe { topology.GetConnectorCount() }.map_err(|error| {
-        hresult(
-            "IDeviceTopology::GetConnectorCount(error attribution)",
-            &error,
-        )
-    })?;
-    if count != 1 {
-        return Ok(false);
-    }
-    let connector = unsafe { topology.GetConnector(0) }
-        .map_err(|error| hresult("IDeviceTopology::GetConnector(error attribution)", &error))?;
-    let adapter_id = take_string(
-        unsafe { connector.GetDeviceIdConnectedTo() }.map_err(|error| {
-            hresult(
-                "IConnector::GetDeviceIdConnectedTo(error attribution)",
-                &error,
-            )
-        })?,
-        "IConnector::GetDeviceIdConnectedTo(error attribution)",
-    )?;
-    let adapter = unsafe { enumerator.GetDevice(&HSTRING::from(adapter_id)) }
-        .map_err(|error| hresult("GetDevice(error attribution)", &error))?;
-    let store = unsafe { adapter.OpenPropertyStore(STGM_READ) }
-        .map_err(|error| hresult("OpenPropertyStore(error attribution)", &error))?;
-    let raw_instance = property_string(&store, &PKEY_Device_InstanceId)
-        .map_err(|error| format!("PKEY_Device_InstanceId(error attribution): {error}"))?;
-    Ok(instance_has_stable_suffix(&raw_instance, stable_id)
-        && raw_instance
-            .rsplit_once('\\')
-            .is_some_and(|(hardware_id, _)| hardware_id.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")))
-}
-
 fn candidate(
     enumerator: &IMMDeviceEnumerator,
     device: &IMMDevice,
     intent: super::super::Intent,
-) -> Result<super::Candidate, String> {
-    let id = take_string(
-        unsafe { device.GetId() }.map_err(|error| hresult("IMMDevice::GetId", &error))?,
-        "IMMDevice::GetId",
-    )?;
+    index: u32,
+) -> Result<super::Candidate, CandidateError> {
+    let failure = |raw_instance, error| CandidateError {
+        raw_instance,
+        intent,
+        index,
+        error,
+    };
+    // Reuse the same adapter read if a later devnode query fails. Retained
+    // Windows endpoints can have valid adapter metadata after PnP removal.
+    let raw_instance =
+        adapter_instance(enumerator, device).map_err(|error| failure(None, error))?;
+    let location = (|| -> Result<_, String> {
+        let mmdevice_id = take_string(
+            unsafe { device.GetId() }.map_err(|error| hresult("IMMDevice::GetId", &error))?,
+            "IMMDevice::GetId",
+        )?;
+        let adapter_node = locate_devnode(&raw_instance, "CM_Locate_DevNodeW(adapter)")?;
+        let mut parent = 0;
+        config(
+            unsafe { CM_Get_Parent(&mut parent, adapter_node, 0) },
+            "CM_Get_Parent(adapter)",
+        )?;
+        Ok((mmdevice_id, instance(parent)?))
+    })();
+    let (mmdevice_id, root_instance) = match location {
+        Ok(location) => location,
+        Err(error) => return Err(failure(Some(raw_instance), error)),
+    };
+    Ok(Candidate {
+        mmdevice_id,
+        raw_instance,
+        root_instance,
+        intent,
+    })
+}
+
+fn adapter_instance(
+    enumerator: &IMMDeviceEnumerator,
+    device: &IMMDevice,
+) -> Result<String, String> {
     let topology: IDeviceTopology = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| hresult("IMMDevice::Activate(IDeviceTopology)", &error))?;
     let connectors = unsafe { topology.GetConnectorCount() }
@@ -315,20 +289,8 @@ fn candidate(
         .map_err(|error| hresult("IMMDeviceEnumerator::GetDevice(opaque adapter ID)", &error))?;
     let store = unsafe { adapter.OpenPropertyStore(STGM_READ) }
         .map_err(|error| hresult("IMMDevice::OpenPropertyStore(adapter)", &error))?;
-    let raw_instance = property_string(&store, &PKEY_Device_InstanceId)
-        .map_err(|error| format!("PKEY_Device_InstanceId(adapter): {error}"))?;
-    let adapter_node = locate_devnode(&raw_instance, "CM_Locate_DevNodeW(adapter)")?;
-    let mut parent = 0;
-    config(
-        unsafe { CM_Get_Parent(&mut parent, adapter_node, 0) },
-        "CM_Get_Parent(adapter)",
-    )?;
-    Ok(Candidate {
-        mmdevice_id: id,
-        raw_instance,
-        root_instance: instance(parent)?,
-        intent,
-    })
+    property_string(&store, &PKEY_Device_InstanceId)
+        .map_err(|error| format!("PKEY_Device_InstanceId(adapter): {error}"))
 }
 
 fn property_string(store: &IPropertyStore, key: &PROPERTYKEY) -> Result<String, String> {

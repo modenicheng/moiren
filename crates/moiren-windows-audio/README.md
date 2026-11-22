@@ -89,6 +89,8 @@ and availability.
 VAD endpoint name refreshes publish Windows metadata after a fresh driver
 query confirms that the same PDO lifetime is still present. When confirmation
 fails, the Windows name and state are unavailable until a later refresh.
+The Windows reader walks each candidate's adapter topology once per refresh.
+A later PnP failure can be attributed using the adapter instance already read.
 
 Native attachment errors and caught audio/bookkeeping panics return the Engine
 to its non-RT joiner. `last_native_report` retains native render/capture failures
