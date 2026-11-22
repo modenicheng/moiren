@@ -14,6 +14,9 @@ mod progress;
 #[path = "vad_integration/project.rs"]
 mod project;
 #[cfg(any(windows, test))]
+#[path = "vad_integration/publication.rs"]
+mod publication;
+#[cfg(any(windows, test))]
 #[path = "vad_integration/rename.rs"]
 mod rename;
 #[cfg(any(windows, test))]
@@ -61,6 +64,8 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename | --rename-stre
     Running gate closures require the same native identity and an observed newer\n\
     stream generation; re-admission is bounded to 5s and the existing phase limit.\n\
     Both gates must be open at successful hold/signal-phase completion.\n\
+    An independent mailbox reader checks the same 2s publication limit during\n\
+    synchronous native preparation and records its sampling coverage.\n\
     --pcm defaults to a 90s overall watchdog and requires at least 60s if set.\n\
     --rename: real service/native Playback then Microphone remove/recreate.\n\
     Hold an initialized exclusive client (no Start/PCM), Stop the Engine, request\n\

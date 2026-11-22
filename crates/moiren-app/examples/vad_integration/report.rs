@@ -201,6 +201,9 @@ pub(super) struct IdleHoldEvidence {
 pub(super) struct PcmEvidence {
     #[cfg(windows)]
     pub identity: Option<super::native::IdentityEvidence>,
+    #[cfg(windows)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_publication: Option<super::publication::PublicationEvidence>,
     pub native_enumeration_failure: Option<Vec<super::rename::enumeration::Failure>>,
     pub source: [f32; 2],
     pub expected_after_gain: [f32; 2],

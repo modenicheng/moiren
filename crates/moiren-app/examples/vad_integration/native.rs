@@ -518,16 +518,19 @@ struct Stream {
 }
 impl Stream {
     fn prepare(device: &IMMDevice, intent: Intent) -> anyhow::Result<Self> {
+        let stage = |call| format!("{intent:?} {call}");
         let wave = descriptor();
-        let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
+        let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .with_context(|| stage("IMMDevice::Activate(IAudioClient)"))?;
         let supported =
             unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None) };
-        supported.ok().context("exact exclusive Float32 format")?;
+        supported
+            .ok()
+            .with_context(|| stage("IAudioClient::IsFormatSupported(exclusive Float32)"))?;
         ensure!(supported == S_OK, "native format was not an exact match");
         let mut period = 0;
-        unsafe {
-            client.GetDevicePeriod(Some(&mut period), None)?;
-        }
+        unsafe { client.GetDevicePeriod(Some(&mut period), None) }
+            .with_context(|| stage("IAudioClient::GetDevicePeriod"))?;
         ensure!(
             (1..=1_000_000).contains(&period),
             "invalid native period {period}"
@@ -548,32 +551,44 @@ impl Stream {
             .as_ref()
             .is_err_and(|error| error.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            let frames = unsafe { client.GetBufferSize()? };
+            let frames = unsafe { client.GetBufferSize() }
+                .with_context(|| stage("IAudioClient::GetBufferSize(alignment)"))?;
             ensure!(
                 (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
                 "alignment buffer too large"
             );
             period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
             drop(client);
-            client = unsafe { device.Activate(CLSCTX_ALL, None)? };
-            initialize(&client, period).context("Initialize(aligned exclusive event)")?;
+            client = unsafe { device.Activate(CLSCTX_ALL, None) }
+                .with_context(|| stage("IMMDevice::Activate(aligned IAudioClient)"))?;
+            initialize(&client, period)
+                .with_context(|| stage("IAudioClient::Initialize(aligned exclusive event)"))?;
         } else {
-            initial.context("Initialize(exclusive event)")?;
+            initial.with_context(|| stage("IAudioClient::Initialize(exclusive event)"))?;
         }
-        let frames = unsafe { client.GetBufferSize()? };
+        let frames = unsafe { client.GetBufferSize() }
+            .with_context(|| stage("IAudioClient::GetBufferSize(exclusive event)"))?;
         ensure!(
             (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
             "native buffer too large"
         );
         // Own this auto-reset event exactly once, for at least the client lifetime.
-        let event =
-            unsafe { OwnedHandle::from_raw_handle(CreateEventW(None, false, false, None)?.0) };
-        unsafe {
-            client.SetEventHandle(HANDLE(event.as_raw_handle()))?;
-        }
+        let event = unsafe {
+            let event = CreateEventW(None, false, false, None)
+                .with_context(|| stage("CreateEventW(audio event)"))?;
+            OwnedHandle::from_raw_handle(event.0)
+        };
+        unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle())) }
+            .with_context(|| stage("IAudioClient::SetEventHandle"))?;
         let service = match intent {
-            Intent::Playback => Service::Render(unsafe { client.GetService()? }),
-            Intent::Microphone => Service::Capture(unsafe { client.GetService()? }),
+            Intent::Playback => Service::Render(
+                unsafe { client.GetService() }
+                    .with_context(|| stage("IAudioClient::GetService(IAudioRenderClient)"))?,
+            ),
+            Intent::Microphone => Service::Capture(
+                unsafe { client.GetService() }
+                    .with_context(|| stage("IAudioClient::GetService(IAudioCaptureClient)"))?,
+            ),
         };
         let mut stream = Self {
             client,
@@ -590,7 +605,7 @@ impl Stream {
             clock_progress: ClockProgress::default(),
         };
         if matches!(stream.service, Service::Render(_)) {
-            stream.render()?;
+            stream.render().context("Playback preload before Start")?;
         }
         // Initialize does not start a client. Stage2 reports starts separately.
         stream.active = false;
@@ -655,7 +670,7 @@ impl Stream {
         let Service::Render(render) = &self.service else {
             anyhow::bail!("not a render client");
         };
-        let pointer = unsafe { render.GetBuffer(self.frames)? };
+        let pointer = unsafe { render.GetBuffer(self.frames) }.context("GetBuffer(render)")?;
         let result = (|| -> anyhow::Result<()> {
             ensure!(!pointer.is_null(), "null render packet");
             if let Some(material) = &mut self.material {

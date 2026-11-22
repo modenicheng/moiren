@@ -2,7 +2,7 @@
 use super::{
     material, native,
     options::Options,
-    progress, project,
+    progress, project, publication,
     report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, ProbeTrail, Report},
     soak, validation,
 };
@@ -683,7 +683,7 @@ impl LiveSession<'_> {
         }
         if let Some((_, observed)) = self.last_snapshot.borrow().as_ref() {
             ensure!(
-                observed.elapsed() <= Duration::from_secs(2),
+                observed.elapsed() <= publication::FRESHNESS_LIMIT,
                 "{stage}: service snapshot publication stale"
             );
         }
@@ -740,7 +740,7 @@ impl LiveSession<'_> {
         }
         ensure!(
             last.as_ref().is_some_and(
-                |(_, observed)| now.duration_since(*observed) <= Duration::from_secs(2)
+                |(_, observed)| now.duration_since(*observed) <= publication::FRESHNESS_LIMIT
             ),
             "service snapshot publication stale"
         );
@@ -876,26 +876,43 @@ impl LiveSession<'_> {
         });
         publish(shared, report);
         eprintln!("stage2: read-only exact root/stable ID -> MMDevice mapping");
-        let mut clients = native::Pair::prepare_observed(
-            stable_ids,
-            (Instant::now() + Duration::from_secs(10)).min(self.deadline),
-            self.deadline,
-            |failure| {
-                if report.error.is_none() {
-                    report.error = failure
-                        .first()
-                        .map(|evidence| evidence.original_error.clone());
-                }
-                report
-                    .pcm
-                    .as_mut()
-                    .expect("PCM evidence")
-                    .native_enumeration_failure = Some(failure);
-                publish(shared, report);
+        let prepare_deadline = (Instant::now() + Duration::from_secs(10)).min(self.deadline);
+        let handle = self.handle;
+        let (prepared, publication) = publication::observe_during(
+            self.last_snapshot.borrow().clone(),
+            move || handle.try_snapshot(),
+            || {
+                native::Pair::prepare_observed(
+                    stable_ids,
+                    prepare_deadline,
+                    self.deadline,
+                    |failure| {
+                        if report.error.is_none() {
+                            report.error = failure
+                                .first()
+                                .map(|evidence| evidence.original_error.clone());
+                        }
+                        report
+                            .pcm
+                            .as_mut()
+                            .expect("PCM evidence")
+                            .native_enumeration_failure = Some(failure);
+                        publish(shared, report);
+                    },
+                )
             },
         )?;
-        report.pcm.as_mut().expect("PCM evidence").identity = Some(clients.identity.clone());
+        let evidence = report.pcm.as_mut().expect("PCM evidence");
+        evidence.prepare_publication = Some(publication.evidence(self.started));
+        evidence.identity = prepared.as_ref().ok().map(|pair| pair.identity.clone());
         publish(shared, report);
+        let mut clients = prepared?;
+        publication.require_fresh()?;
+        let latest = publication.into_latest();
+        report.last_snapshot_observed_ms = latest
+            .as_ref()
+            .map(|(_, observed)| (*observed - self.started).as_millis());
+        *self.last_snapshot.borrow_mut() = latest;
         self.require_running("before_native_client_start", report, shared, self.deadline)?;
         let outcome = (|| -> anyhow::Result<()> {
             let started = clients.start(&mut report.native_clients_started_by_probe);
