@@ -369,7 +369,11 @@ impl Pair {
     }
 
     pub fn start(&mut self, started: &mut u32) -> anyhow::Result<()> {
-        validation::start_clients(started, || self.capture.start(), || self.render.start())
+        validation::start_clients(
+            started,
+            || self.capture.start().context("Microphone Start"),
+            || self.render.start().context("Playback Start"),
+        )
     }
 
     pub fn set_signal(&mut self, signal: [f32; 2]) {

@@ -2,6 +2,7 @@
 use super::{NativeName, RetirementEvidence, RuntimeEvidence};
 use crate::validation::Observation;
 use anyhow::{Context, ensure};
+use moiren_windows_audio::vad::StableEndpointId;
 use serde::Serialize;
 
 #[cfg(windows)]
@@ -316,9 +317,17 @@ impl PcmPhase {
             "PCM evidence crossed native identity, binding, revision or observation"
         );
         let name = self.name.as_ref().context("missing actual MMDevice name")?;
+        let project_id = admission
+            .intent
+            .endpoint_id
+            .parse()
+            .context("invalid project endpoint ID in PCM admission")?;
+        // The Windows instance suffix prints the ABI's High/Low words. Project
+        // evidence prints the same identity bytes in their original order.
+        let stable_id = StableEndpointId::from_virtual_endpoint_id(project_id);
         ensure!(
             self.pair_mmdevice_id.as_deref() == Some(name.mmdevice_id.as_str())
-                && name.stable_id == admission.intent.endpoint_id
+                && name.stable_id == stable_id.to_string()
                 && name.direction == admission.intent.direction,
             "PCM pair does not match the observed MMDevice/project identity"
         );

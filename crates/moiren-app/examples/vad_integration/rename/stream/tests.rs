@@ -5,10 +5,13 @@ use crate::{
 };
 use std::{cell::Cell, rc::Rc};
 
+const PROJECT_ENDPOINT_ID: &str = "00112233445566778899aabbccddeeff";
+const DEVICE_INSTANCE_STABLE_ID: &str = "ffeeddccbbaa99887766554433221100";
+
 fn runtime(fresh: bool) -> RuntimeEvidence {
     RuntimeEvidence {
         intent: IntentEvidence {
-            endpoint_id: "stable".into(),
+            endpoint_id: PROJECT_ENDPOINT_ID.into(),
             direction: "Playback".into(),
             channels: 2,
             binding: Some("node-7".into()),
@@ -65,7 +68,7 @@ fn phase(fresh: bool) -> PcmPhase {
         gate_transitions: Vec::new(),
         name: Some(NativeName {
             root_instance: "root".into(),
-            stable_id: "stable".into(),
+            stable_id: DEVICE_INSTANCE_STABLE_ID.into(),
             direction: "Playback".into(),
             mmdevice_id: if fresh { "new-mm" } else { "old-mm" }.into(),
             adapter_instance: "adapter".into(),
@@ -96,6 +99,15 @@ fn complete() -> Case {
     case.diagnostic_completed = true;
     case.rename_while_started = true;
     case
+}
+
+#[test]
+fn streaming_pcm_matches_project_and_device_instance_id_encodings() {
+    let mut evidence = phase(true);
+    evidence.require_complete().unwrap();
+    evidence.name.as_mut().unwrap().stable_id = PROJECT_ENDPOINT_ID.into();
+    let error = evidence.require_complete().unwrap_err();
+    assert!(error.to_string().contains("MMDevice/project identity"));
 }
 
 #[test]

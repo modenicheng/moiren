@@ -101,7 +101,10 @@ fn route() -> ([String; 2], [RuntimeEvidence; 2]) {
     let mut peer = runtime(true);
     peer.intent.endpoint_id = "peer".into();
     peer.intent.direction = "Microphone".into();
-    (["stable".into(), "peer".into()], [runtime(true), peer])
+    (
+        [PROJECT_ENDPOINT_ID.into(), "peer".into()],
+        [runtime(true), peer],
+    )
 }
 
 fn project_route(route: &[RuntimeEvidence; 2], id: &str) -> anyhow::Result<RuntimeEvidence> {

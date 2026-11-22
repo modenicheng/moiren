@@ -219,6 +219,7 @@ pub(super) struct TopologyEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct NativeName {
     pub root_instance: String,
+    /// VAD device-instance identity in ABI High/Low word order.
     pub stable_id: String,
     pub direction: String,
     pub mmdevice_id: String,
