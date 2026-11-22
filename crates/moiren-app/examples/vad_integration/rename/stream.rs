@@ -18,6 +18,8 @@ pub(crate) struct PcmPhase {
     pub pair_mmdevice_id: Option<String>,
     pub gate_transitions: Vec<crate::validation::GateProgress>,
     pub name: Option<NativeName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_enumeration_failure: Option<super::enumeration::Failure>,
     pub admission: Option<RuntimeEvidence>,
     pub confirmed: Option<RuntimeEvidence>,
     pub pcm: Observation,

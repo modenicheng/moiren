@@ -84,6 +84,7 @@ fn phase(fresh: bool) -> PcmPhase {
         admission: Some(runtime(fresh)),
         confirmed: Some(runtime(fresh)),
         pcm,
+        name_enumeration_failure: None,
     }
 }
 
@@ -108,6 +109,49 @@ fn streaming_pcm_matches_project_and_device_instance_id_encodings() {
     evidence.name.as_mut().unwrap().stable_id = PROJECT_ENDPOINT_ID.into();
     let error = evidence.require_complete().unwrap_err();
     assert!(error.to_string().contains("MMDevice/project identity"));
+}
+
+#[test]
+fn streaming_name_failure_keeps_late_identity_in_the_failed_phase() {
+    use crate::rename::enumeration::{ActiveIdentityLookup, Failure, FreshActiveObservation, Read};
+
+    let mut case = complete();
+    case.after.name = None;
+    case.after.name_enumeration_failure = Some(Failure {
+        original_error: "replacement MMDevice absent".into(),
+        direction: "Playback".into(),
+        requested_stable_id: DEVICE_INSTANCE_STABLE_ID.into(),
+        requested_root: "root".into(),
+        enumeration_mask: "DEVICE_STATEMASK_ALL; diagnostic only",
+        elapsed_ms: 6,
+        total_endpoints: Some(0),
+        collection_error: None,
+        truncated: false,
+        collection_completed: true,
+        endpoints: Vec::new(),
+        fresh_active: Some(FreshActiveObservation {
+            started_after_failure_ms: 7,
+            elapsed_ms: 1,
+            lookup: Read::Value {
+                value: ActiveIdentityLookup {
+                    active_endpoints: 1,
+                    exact_mmdevice_id: Some("late-device".into()),
+                    topology_errors: Vec::new(),
+                },
+            },
+        }),
+    });
+    case.finish();
+    assert!(!case.completed);
+    let report = serde_json::to_value(case).unwrap();
+    assert!(report["before"].get("name_enumeration_failure").is_none());
+    assert!(report["after"]["name"].is_null());
+    let failure = &report["after"]["name_enumeration_failure"];
+    assert_eq!(failure["original_error"], "replacement MMDevice absent");
+    assert_eq!(
+        failure["fresh_active"]["lookup"]["value"]["exact_mmdevice_id"],
+        "late-device"
+    );
 }
 
 #[test]

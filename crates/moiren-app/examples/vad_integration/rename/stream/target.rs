@@ -108,11 +108,17 @@ fn exercise_case(
         seed_gates(&snapshot, &mut case.before)?;
         // Read-only MMDevice/store owners return and drop before any exclusive
         // Pair initialization. The name observation never activates IAudioClient.
-        case.before.name = Some(rename_stream::observe_name(
+        let old_name = rename_stream::observe_name(
             stable[index],
             intent,
             phase_deadline(deadline),
-        )?);
+            deadline,
+            |failure| {
+                case.before.name_enumeration_failure = Some(failure);
+                emit(case);
+            },
+        )?;
+        case.before.name = Some(old_name);
         emit(case);
         old_owner = Some(Pair::prepare(stable, phase_deadline(deadline))?);
         case.before.initialized = true;
@@ -231,7 +237,16 @@ fn exercise_case(
             },
         )?;
         // No initialized exclusive Pair exists during this readback/Apply.
-        match rename_stream::observe_name(stable[index], intent, phase_deadline(deadline)) {
+        match rename_stream::observe_name(
+            stable[index],
+            intent,
+            phase_deadline(deadline),
+            deadline,
+            |failure| {
+                case.after.name_enumeration_failure = Some(failure);
+                emit(case);
+            },
+        ) {
             Ok(name) => {
                 case.after.name = Some(name);
                 emit(case);

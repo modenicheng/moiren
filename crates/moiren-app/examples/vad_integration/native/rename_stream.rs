@@ -1,12 +1,14 @@
 //! Read-only, short-lived MMDevice owners; no exclusive client for name reads.
 use super::*;
-use crate::rename::{NativeName, stream::NativeFailure};
+use crate::rename::{NativeName, enumeration::Failure, stream::NativeFailure};
 use windows::Win32::Media::Audio::AUDCLNT_E_DEVICE_INVALIDATED;
 
 pub(crate) fn observe_name(
     stable: StableEndpointId,
     intent: Intent,
     deadline: Instant,
+    diagnostic_deadline: Instant,
+    mut publish_failure: impl FnMut(Failure),
 ) -> anyhow::Result<NativeName> {
     let _apartment = Apartment::new()?;
     let interfaces = discover_present_interfaces()?;
@@ -17,39 +19,54 @@ pub(crate) fn observe_name(
     let root = identity::root_instance(&interfaces[0])?;
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-    loop {
+    let candidate = (|| loop {
         ensure!(
             Instant::now() < deadline,
             "streaming name enumeration deadline"
         );
         let (candidates, errors) = identity::candidates(&enumerator)?;
         if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
-            let device = exact_device(&enumerator, candidate, stable, &root)?;
-            let observed = NativeName {
-                root_instance: root,
-                stable_id: stable.to_string(),
-                direction: format!("{intent:?}"),
-                mmdevice_id: identity::take_string(unsafe { device.GetId()? })?,
-                adapter_instance: candidate.raw_instance.clone(),
-                windows_friendly_name: windows_friendly_name(&device)?,
-                device_desc: optional_property(&device, &PKEY_Device_DeviceDesc),
-                device_interface_friendly_name: optional_property(
-                    &device,
-                    &PKEY_DeviceInterface_FriendlyName,
-                ),
-                topology: None,
-            };
-            ensure!(
-                Instant::now() < deadline,
-                "streaming name read exceeded deadline"
-            );
-            // IMMDevice/store/enumerator drop before the apartment and before
-            // caller Apply. No IAudioClient was activated by this observation.
-            return Ok(observed);
+            break Ok(candidate.clone());
         }
         ensure!(Instant::now() < deadline, "MMDevice absent: {errors:?}");
         thread::sleep(Duration::from_millis(20));
-    }
+    })()
+    .inspect_err(|error| {
+        let failed_at = Instant::now();
+        let deadline = diagnostic_deadline.min(failed_at + Duration::from_secs(1));
+        // Publish before entering COM again. A stalled diagnostic call must
+        // leave the original ACTIVE failure in the case's progress report.
+        publish_failure(enumeration::pending(stable, intent, &root, error));
+        let mut evidence =
+            enumeration::collect(&enumerator, stable, intent, &root, deadline, error);
+        publish_failure(evidence.clone());
+        evidence.fresh_active = Some(enumeration::recheck_active(
+            stable, intent, &root, failed_at, deadline,
+        ));
+        publish_failure(evidence);
+    })?;
+    let device = exact_device(&enumerator, &candidate, stable, &root)?;
+    let observed = NativeName {
+        root_instance: root,
+        stable_id: stable.to_string(),
+        direction: format!("{intent:?}"),
+        mmdevice_id: identity::take_string(unsafe { device.GetId()? })?,
+        adapter_instance: candidate.raw_instance,
+        windows_friendly_name: windows_friendly_name(&device)?,
+        device_desc: optional_property(&device, &PKEY_Device_DeviceDesc),
+        device_interface_friendly_name: optional_property(
+            &device,
+            &PKEY_DeviceInterface_FriendlyName,
+        ),
+        topology: None,
+    };
+    ensure!(
+        Instant::now() < deadline,
+        "streaming name read exceeded deadline"
+    );
+    // IMMDevice/store/enumerator drop before the apartment and before caller
+    // Apply. No IAudioClient was activated by this observation.
+    Ok(observed)
 }
 
 pub(crate) fn failure(stage: &'static str, error: &anyhow::Error) -> NativeFailure {
