@@ -665,22 +665,7 @@ impl Adapter for WindowsAdapter {
                 errors.push(error);
             }
         }
-        let provider_views = self.0.export_observations();
-        let name_targets = provider_views
-            .iter()
-            .map(|view| moiren_windows_audio::vad::VadEndpointNameTarget {
-                endpoint_id: view.endpoint_id,
-                intent: view.intent,
-                snapshot: view.snapshot,
-                removing: view.removing,
-                error: view.error.clone().or_else(|| {
-                    (view.diagnostic_provenance
-                        == moiren_windows_audio::vad::VadExportDiagnosticProvenance::CachedAfterQueryFailure)
-                        .then(|| "QUERY failed; retained snapshot is not current name authority".into())
-                }),
-            })
-            .collect::<Vec<_>>();
-        let windows_names = self.0.export_name_observations(&name_targets);
+        let (provider_views, windows_names) = self.0.export_observations_with_names();
         let observations = provider_views
             .into_iter()
             .map(|view| {

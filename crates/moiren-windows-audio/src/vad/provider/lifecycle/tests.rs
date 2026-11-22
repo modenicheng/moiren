@@ -768,6 +768,63 @@ fn poll_confirms_a_terminal_remove_retry_before_the_batch_is_returned() {
 }
 
 #[test]
+fn windows_name_read_requires_the_following_regular_poll_to_confirm_its_lifetime() {
+    use std::cell::RefCell;
+
+    for (state, token, fail_query, expect_name) in [
+        (PdoState::Present, 11, false, true),
+        (PdoState::Removing, 11, false, false),
+        (PdoState::Removed, 11, false, false),
+        (PdoState::Present, 12, false, false),
+        (PdoState::Present, 11, true, false),
+    ] {
+        let lifecycle = RefCell::new(Lifecycle::new(Fake::default()));
+        lifecycle.borrow_mut().create(spec()).unwrap();
+        lifecycle.borrow_mut().poll();
+        let before = lifecycle.borrow().control.query_calls;
+        let targets = lifecycle.borrow().name_targets();
+        assert_eq!(lifecycle.borrow().control.query_calls, before);
+        let prior = targets[0].snapshot.unwrap();
+        let (views, names) = super::super::poll_after_name_read(
+            || {
+                // Move the native endpoint while the Windows property read
+                // is in flight, with the stable ID and MMDevice ID unchanged.
+                let mut lifecycle = lifecycle.borrow_mut();
+                lifecycle.control.current = snapshot_generation(state, 4, 6, false, token);
+                lifecycle.control.fail_query = fail_query;
+                vec![VadEndpointNameObservation {
+                    endpoint_id: id(),
+                    native_identity: [
+                        prior.pdo_token().get(),
+                        prior.session_epoch(),
+                        prior.endpoint_generation(),
+                    ],
+                    observed_qpc_100ns: None,
+                    mmdevice_id: Some("same opaque MMDevice ID".into()),
+                    name: Some("Windows name".into()),
+                    device_state: Some(1),
+                    device_state_error: None,
+                    error: None,
+                }]
+            },
+            || {
+                lifecycle
+                    .borrow_mut()
+                    .poll()
+                    .into_iter()
+                    .map(Into::into)
+                    .collect()
+            },
+        );
+        assert_eq!(lifecycle.borrow().control.query_calls, before + 1);
+        assert_eq!(names.len(), usize::from(expect_name), "{state:?}/{token}");
+        if !fail_query {
+            assert_eq!(views[0].snapshot.unwrap().state(), state);
+        }
+    }
+}
+
+#[test]
 fn retirement_confirmation_queries_retained_removed_and_fails_closed() {
     let mut lifecycle = Lifecycle::new(Fake::default());
     lifecycle.create(spec()).unwrap();

@@ -4,7 +4,7 @@
 //! from native client lifetimes. A raw PDO may be Present while no client has
 //! opened a stream; that is an idle, usable state, not a transport failure.
 
-use super::endpoint_name::{NameObserver, VadEndpointNameTarget};
+use super::endpoint_name::{NameObserver, VadEndpointNameObservation, VadEndpointNameTarget};
 use super::{
     Channels, ClientError, ControlClient, DeviceInterface, Intent, PcmCompletion,
     PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, ResidualPcm,
@@ -110,6 +110,34 @@ impl From<ExportView> for VadExportObservation {
             diagnostic_provenance,
         }
     }
+}
+
+impl VadExportObservation {
+    fn confirms_name(&self, name: &VadEndpointNameObservation) -> bool {
+        self.endpoint_id == name.endpoint_id
+            && !self.removing
+            && self.error.is_none()
+            && self.diagnostic_provenance == VadExportDiagnosticProvenance::Fresh
+            && self.snapshot.is_some_and(|snapshot| {
+                snapshot.state() == PdoState::Present
+                    && name.native_identity
+                        == [
+                            snapshot.pdo_token().get(),
+                            snapshot.session_epoch(),
+                            snapshot.endpoint_generation(),
+                        ]
+            })
+    }
+}
+
+fn poll_after_name_read(
+    read: impl FnOnce() -> Vec<VadEndpointNameObservation>,
+    poll: impl FnOnce() -> Vec<VadExportObservation>,
+) -> (Vec<VadExportObservation>, Vec<VadEndpointNameObservation>) {
+    let mut names = read();
+    let views = poll();
+    names.retain(|name| views.iter().any(|view| view.confirms_name(name)));
+    (views, names)
 }
 
 #[derive(Clone, Copy)]
@@ -383,7 +411,7 @@ impl WindowsVadProvider {
     pub fn export_name_observations(
         &self,
         exports: &[VadEndpointNameTarget],
-    ) -> Vec<super::VadEndpointNameObservation> {
+    ) -> Vec<VadEndpointNameObservation> {
         let mut observer = self
             .name_observer
             .lock()
@@ -397,6 +425,23 @@ impl WindowsVadProvider {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         observer.observe(exports, &mut *reader, &mut *clock)
+    }
+
+    /// Read Windows metadata on the lifecycle worker, then confirm it with the
+    /// worker's normal driver poll. A prior snapshot selects the reads and the
+    /// current snapshots determine which names can accompany the returned views.
+    pub fn export_observations_with_names(
+        &self,
+    ) -> (Vec<VadExportObservation>, Vec<VadEndpointNameObservation>) {
+        let targets = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .name_targets();
+        poll_after_name_read(
+            || self.export_name_observations(&targets),
+            || self.export_observations(),
+        )
     }
 
     pub fn set_export_gate(

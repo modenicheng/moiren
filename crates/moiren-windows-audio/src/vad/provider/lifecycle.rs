@@ -335,6 +335,20 @@ impl<C: EndpointControl> Lifecycle<C> {
         }
     }
 
+    pub(super) fn name_targets(&self) -> Vec<VadEndpointNameTarget> {
+        self.endpoints
+            .values()
+            .filter(|record| record.diagnostic_provenance == VadExportDiagnosticProvenance::Fresh)
+            .map(|record| VadEndpointNameTarget {
+                endpoint_id: record.spec.id,
+                intent: record.spec.intent,
+                snapshot: record.snapshot,
+                removing: record.removing,
+                error: record.error.clone(),
+            })
+            .collect()
+    }
+
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
             record.reap_sessions();

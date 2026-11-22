@@ -86,6 +86,10 @@ static unsupported configurations do not arm retry probes. Endpoint probing
 supplies retry eligibility; actual stream preparation still establishes format
 and availability.
 
+VAD endpoint name refreshes publish Windows metadata after a fresh driver
+query confirms that the same PDO lifetime is still present. When confirmation
+fails, the Windows name and state are unavailable until a later refresh.
+
 Native attachment errors and caught audio/bookkeeping panics return the Engine
 to its non-RT joiner. `last_native_report` retains native render/capture failures
 along with owned-resource return. Deterministic tests use fake native owners.
