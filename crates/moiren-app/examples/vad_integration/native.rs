@@ -1,6 +1,7 @@
 //! Apartment-local native clients only; never creates a driver control owner.
 use super::{
     identity,
+    rename::{PropertyReadError, PropertyReadback},
     soak::{CapturePosition, ClockProgress, NativeDiagnostics},
     validation::{self, Candidate},
 };
@@ -10,6 +11,7 @@ use moiren_windows_audio::vad::{
 };
 use serde::Serialize;
 use std::{
+    cell::Cell,
     marker::PhantomData,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     rc::Rc,
@@ -19,7 +21,8 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{HANDLE, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Devices::FunctionDiscovery::{PKEY_Device_DeviceDesc, PKEY_DeviceInterface_FriendlyName},
+        Foundation::{HANDLE, PROPERTYKEY, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
             AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_BUFFER_ERROR,
@@ -31,12 +34,22 @@ use windows::{
         System::{
             Com::{
                 CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+                STGM_READ, StructuredStorage::PROPVARIANT,
             },
             Threading::{CreateEventW, WaitForSingleObject},
         },
     },
     core::{GUID, HSTRING, Interface},
 };
+
+#[path = "native/topology.rs"]
+mod topology;
+
+#[path = "native/enumeration.rs"]
+mod enumeration;
+
+#[path = "native/rename_stream.rs"]
+pub(super) mod rename_stream;
 
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
@@ -79,8 +92,230 @@ pub(super) struct Pair {
     _apartment: Apartment,
 }
 
+/// One initialized exclusive WASAPI client. It deliberately never calls Start:
+/// it observes native ownership independently of PCM quality. COM ownership is
+/// not a driver guarantee to defer PDO removal; the driver may revoke a stream.
+/// Only this opt-in path retains an MMDevice for Windows property readback.
+pub(super) struct HeldClient {
+    stream: Stream,
+    device: IMMDevice,
+    identity: super::rename::NativeName,
+    topology_pending: Cell<bool>,
+    // All COM references above must be released before CoUninitialize.
+    _apartment: Apartment,
+}
+
+impl HeldClient {
+    pub fn prepare(
+        stable: StableEndpointId,
+        intent: Intent,
+        deadline: Instant,
+        diagnostic_deadline: Instant,
+        failure: impl FnMut(super::rename::enumeration::Failure),
+    ) -> anyhow::Result<Self> {
+        let apartment = Apartment::new()?;
+        let interfaces = discover_present_interfaces()?;
+        ensure!(
+            interfaces.len() == 1,
+            "rename requires exactly one present VAD root"
+        );
+        let root = identity::root_instance(&interfaces[0])?;
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+        let candidate = super::rename::enumeration::retain_failure(
+            || loop {
+                ensure!(
+                    Instant::now() < deadline,
+                    "rename MMDevice enumeration timed out"
+                );
+                let (candidates, errors) = identity::candidates(&enumerator)?;
+                if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
+                    break Ok(candidate.clone());
+                }
+                ensure!(
+                    Instant::now() < deadline,
+                    "rename MMDevice not present; topology errors: {errors:?}"
+                );
+                thread::sleep(Duration::from_millis(20));
+            },
+            |error| enumeration::pending(stable, intent, &root, error),
+            failure,
+            |error| {
+                enumeration::collect(
+                    &enumerator,
+                    stable,
+                    intent,
+                    &root,
+                    diagnostic_deadline,
+                    error,
+                )
+            },
+        )?;
+        let device = exact_device(&enumerator, &candidate, stable, &root)?;
+        let stream = Stream::prepare(&device, intent)?;
+        let windows_friendly_name = windows_friendly_name(&device)?;
+        let device_desc = optional_property(&device, &PKEY_Device_DeviceDesc);
+        let device_interface_friendly_name =
+            optional_property(&device, &PKEY_DeviceInterface_FriendlyName);
+        ensure!(
+            Instant::now() < deadline,
+            "rename native initialization exceeded deadline"
+        );
+        Ok(Self {
+            stream,
+            device,
+            identity: super::rename::NativeName {
+                root_instance: root,
+                stable_id: stable.to_string(),
+                direction: format!("{intent:?}"),
+                mmdevice_id: candidate.id,
+                adapter_instance: candidate.raw_instance,
+                windows_friendly_name,
+                device_desc,
+                device_interface_friendly_name,
+                topology: None,
+            },
+            topology_pending: Cell::new(true),
+            _apartment: apartment,
+        })
+    }
+
+    pub fn observe(&self) -> anyhow::Result<super::rename::NativeName> {
+        let mut observed = self.identity.clone();
+        // GetId and a newly opened read-only property store use the held actual
+        // MMDevice. No cached provider name participates in this observation.
+        observed.mmdevice_id = identity::take_string(unsafe { self.device.GetId()? })?;
+        observed.windows_friendly_name = windows_friendly_name(&self.device)?;
+        observed.device_desc = optional_property(&self.device, &PKEY_Device_DeviceDesc);
+        observed.device_interface_friendly_name =
+            optional_property(&self.device, &PKEY_DeviceInterface_FriendlyName);
+        // Collect only for baseline/fresh first observations. No topology/COM
+        // reference survives this call; while-held polls do not repeat it or
+        // misrepresent a saved baseline as a current topology observation.
+        observed.topology =
+            topology::collect_once(&self.topology_pending, || topology::collect(&self.device));
+        Ok(observed)
+    }
+
+    pub fn release(mut self) -> anyhow::Result<()> {
+        let stopped = self.stream.stop();
+        // Drop every native reference even if Stop fails; do not postpone release
+        // until a successful service rename or hide the original Stop error.
+        drop(self);
+        stopped
+    }
+}
+
+fn optional_property(device: &IMMDevice, key: &PROPERTYKEY) -> PropertyReadback {
+    // Reopen this actual MMDevice's read-only store for each observation. Never
+    // fill a missing property from provider specs, a parent or the held cache.
+    let read = || {
+        let store = unsafe { device.OpenPropertyStore(STGM_READ) }.map_err(|error| {
+            PropertyReadError::OpenPropertyStore {
+                hresult: error.code().0,
+                message: error.to_string(),
+            }
+        })?;
+        let property =
+            unsafe { store.GetValue(key) }.map_err(|error| PropertyReadError::GetValue {
+                hresult: error.code().0,
+                message: error.to_string(),
+            })?;
+        property_text(&property)
+    };
+    match read() {
+        Ok(value) => PropertyReadback::Value { value },
+        Err(error) => PropertyReadback::Error { error },
+    }
+}
+
+fn property_text(property: &PROPVARIANT) -> Result<String, PropertyReadError> {
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    let vartype = property.vt();
+    if vartype != VT_LPWSTR {
+        return Err(PropertyReadError::UnexpectedType { vartype: vartype.0 });
+    }
+    // SAFETY: the VARTYPE was checked before accessing the string union. The
+    // PROPVARIANT keeps its COM-owned string alive until the exact UTF-16 copy
+    // completes; its normal Drop then clears it, including error paths.
+    unsafe {
+        let pointer = property.Anonymous.Anonymous.Anonymous.pwszVal;
+        if pointer.is_null() {
+            return Err(PropertyReadError::NullString);
+        }
+        String::from_utf16(pointer.as_wide()).map_err(|error| PropertyReadError::InvalidUtf16 {
+            message: error.to_string(),
+        })
+    }
+}
+
+fn windows_friendly_name(device: &IMMDevice) -> anyhow::Result<String> {
+    use windows::Win32::{
+        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
+        System::{Com::STGM_READ, Variant::VT_LPWSTR},
+    };
+    // SAFETY: apartment-local IMMDevice; the PROPVARIANT owns its string until
+    // the strict UTF-16 copy finishes. Its Drop clears the COM allocation.
+    unsafe {
+        let store = device.OpenPropertyStore(STGM_READ)?;
+        let property = store.GetValue(&PKEY_Device_FriendlyName)?;
+        ensure!(
+            property.Anonymous.Anonymous.vt == VT_LPWSTR,
+            "Windows FriendlyName is not VT_LPWSTR"
+        );
+        let pointer = property.Anonymous.Anonymous.Anonymous.pwszVal;
+        ensure!(!pointer.is_null(), "Windows FriendlyName is null");
+        Ok(String::from_utf16(pointer.as_wide())?)
+    }
+}
+
 impl Pair {
     pub fn prepare(ids: [StableEndpointId; 2], deadline: Instant) -> anyhow::Result<Self> {
+        Self::prepare_inner(ids, deadline, |_, _, _| {})
+    }
+
+    pub fn prepare_observed(
+        ids: [StableEndpointId; 2],
+        deadline: Instant,
+        diagnostic_deadline: Instant,
+        mut publish: impl FnMut(Vec<super::rename::enumeration::Failure>),
+    ) -> anyhow::Result<Self> {
+        Self::prepare_inner(ids, deadline, |enumerator, root, error| {
+            let routes = [(ids[0], Intent::Playback), (ids[1], Intent::Microphone)];
+            let pending = routes
+                .iter()
+                .map(|&(stable, intent)| enumeration::pending(stable, intent, root, error))
+                .collect();
+            // Both flows share one additional scheduling budget, never two
+            // independent extensions of the original case work deadline.
+            let failed_at = Instant::now();
+            let deadline = diagnostic_deadline.min(failed_at + Duration::from_secs(1));
+            let mut evidence = super::rename::enumeration::collect_routes(
+                pending,
+                |index| {
+                    let (stable, intent) = routes[index];
+                    enumeration::collect(enumerator, stable, intent, root, deadline, error)
+                },
+                &mut publish,
+            );
+            // Keep the original failure and ALL-state snapshot first. A
+            // later match can also reflect publication progress, so record
+            // timing and leave failed admission untouched.
+            let deadline = diagnostic_deadline.min(Instant::now() + Duration::from_millis(500));
+            for (index, (stable, intent)) in routes.into_iter().enumerate() {
+                evidence[index].fresh_active = Some(enumeration::recheck_active(
+                    stable, intent, root, failed_at, deadline,
+                ));
+                publish(evidence.clone());
+            }
+        })
+    }
+
+    fn prepare_inner(
+        ids: [StableEndpointId; 2],
+        deadline: Instant,
+        mut failure: impl FnMut(&IMMDeviceEnumerator, &str, &anyhow::Error),
+    ) -> anyhow::Result<Self> {
         let apartment = Apartment::new()?;
         // Read-only SetupAPI identity resolution. No ControlClient/PcmOwner here.
         let interfaces = discover_present_interfaces()?;
@@ -92,19 +327,23 @@ impl Pair {
         let root = identity::root_instance(&interfaces[0])?;
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-        let [playback, microphone] = loop {
+        let selected = (|| loop {
             let (candidates, errors) = identity::candidates(&enumerator)?;
             let playback = validation::select(&candidates, ids[0], Intent::Playback, &root)?;
             let microphone = validation::select(&candidates, ids[1], Intent::Microphone, &root)?;
             if let (Some(playback), Some(microphone)) = (playback, microphone) {
-                break [playback.clone(), microphone.clone()];
+                break Ok([playback.clone(), microphone.clone()]);
             }
             ensure!(
                 Instant::now() < deadline,
                 "owned MMDevices did not arrive; topology errors: {errors:?}"
             );
             thread::sleep(Duration::from_millis(20));
-        };
+        })();
+        if let Err(error) = &selected {
+            failure(&enumerator, &root, error);
+        }
+        let [playback, microphone] = selected?;
         let render_device = exact_device(&enumerator, &playback, ids[0], &root)?;
         let capture_device = exact_device(&enumerator, &microphone, ids[1], &root)?;
         let render = Stream::prepare(&render_device, Intent::Playback)?;
@@ -130,7 +369,11 @@ impl Pair {
     }
 
     pub fn start(&mut self, started: &mut u32) -> anyhow::Result<()> {
-        validation::start_clients(started, || self.capture.start(), || self.render.start())
+        validation::start_clients(
+            started,
+            || self.capture.start().context("Microphone Start"),
+            || self.render.start().context("Playback Start"),
+        )
     }
 
     pub fn set_signal(&mut self, signal: [f32; 2]) {
@@ -279,16 +522,19 @@ struct Stream {
 }
 impl Stream {
     fn prepare(device: &IMMDevice, intent: Intent) -> anyhow::Result<Self> {
+        let stage = |call| format!("{intent:?} {call}");
         let wave = descriptor();
-        let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
+        let mut client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .with_context(|| stage("IMMDevice::Activate(IAudioClient)"))?;
         let supported =
             unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &wave.Format, None) };
-        supported.ok().context("exact exclusive Float32 format")?;
+        supported
+            .ok()
+            .with_context(|| stage("IAudioClient::IsFormatSupported(exclusive Float32)"))?;
         ensure!(supported == S_OK, "native format was not an exact match");
         let mut period = 0;
-        unsafe {
-            client.GetDevicePeriod(Some(&mut period), None)?;
-        }
+        unsafe { client.GetDevicePeriod(Some(&mut period), None) }
+            .with_context(|| stage("IAudioClient::GetDevicePeriod"))?;
         ensure!(
             (1..=1_000_000).contains(&period),
             "invalid native period {period}"
@@ -309,32 +555,44 @@ impl Stream {
             .as_ref()
             .is_err_and(|error| error.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            let frames = unsafe { client.GetBufferSize()? };
+            let frames = unsafe { client.GetBufferSize() }
+                .with_context(|| stage("IAudioClient::GetBufferSize(alignment)"))?;
             ensure!(
                 (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
                 "alignment buffer too large"
             );
             period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
             drop(client);
-            client = unsafe { device.Activate(CLSCTX_ALL, None)? };
-            initialize(&client, period).context("Initialize(aligned exclusive event)")?;
+            client = unsafe { device.Activate(CLSCTX_ALL, None) }
+                .with_context(|| stage("IMMDevice::Activate(aligned IAudioClient)"))?;
+            initialize(&client, period)
+                .with_context(|| stage("IAudioClient::Initialize(aligned exclusive event)"))?;
         } else {
-            initial.context("Initialize(exclusive event)")?;
+            initial.with_context(|| stage("IAudioClient::Initialize(exclusive event)"))?;
         }
-        let frames = unsafe { client.GetBufferSize()? };
+        let frames = unsafe { client.GetBufferSize() }
+            .with_context(|| stage("IAudioClient::GetBufferSize(exclusive event)"))?;
         ensure!(
             (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
             "native buffer too large"
         );
         // Own this auto-reset event exactly once, for at least the client lifetime.
-        let event =
-            unsafe { OwnedHandle::from_raw_handle(CreateEventW(None, false, false, None)?.0) };
-        unsafe {
-            client.SetEventHandle(HANDLE(event.as_raw_handle()))?;
-        }
+        let event = unsafe {
+            let event = CreateEventW(None, false, false, None)
+                .with_context(|| stage("CreateEventW(audio event)"))?;
+            OwnedHandle::from_raw_handle(event.0)
+        };
+        unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle())) }
+            .with_context(|| stage("IAudioClient::SetEventHandle"))?;
         let service = match intent {
-            Intent::Playback => Service::Render(unsafe { client.GetService()? }),
-            Intent::Microphone => Service::Capture(unsafe { client.GetService()? }),
+            Intent::Playback => Service::Render(
+                unsafe { client.GetService() }
+                    .with_context(|| stage("IAudioClient::GetService(IAudioRenderClient)"))?,
+            ),
+            Intent::Microphone => Service::Capture(
+                unsafe { client.GetService() }
+                    .with_context(|| stage("IAudioClient::GetService(IAudioCaptureClient)"))?,
+            ),
         };
         let mut stream = Self {
             client,
@@ -351,7 +609,7 @@ impl Stream {
             clock_progress: ClockProgress::default(),
         };
         if matches!(stream.service, Service::Render(_)) {
-            stream.render()?;
+            stream.render().context("Playback preload before Start")?;
         }
         // Initialize does not start a client. Stage2 reports starts separately.
         stream.active = false;
@@ -416,7 +674,7 @@ impl Stream {
         let Service::Render(render) = &self.service else {
             anyhow::bail!("not a render client");
         };
-        let pointer = unsafe { render.GetBuffer(self.frames)? };
+        let pointer = unsafe { render.GetBuffer(self.frames) }.context("GetBuffer(render)")?;
         let result = (|| -> anyhow::Result<()> {
             ensure!(!pointer.is_null(), "null render packet");
             if let Some(material) = &mut self.material {
@@ -469,7 +727,7 @@ impl Stream {
         if frames == 0 {
             return Ok(());
         }
-        let result = (|| -> anyhow::Result<()> {
+        let copied = (|| -> anyhow::Result<bool> {
             ensure!(frames <= self.frames, "capture lease exceeds capacity");
             let decoded = &mut self.decoded[..frames as usize * 2];
             if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
@@ -492,18 +750,150 @@ impl Stream {
                     .observe(device_position, qpc, frames, discontinuity, timestamp_error);
             // Short Stage2 retains its existing discontinuity criterion. Soak
             // additionally rejects missing/untrusted native packet positions.
-            observe(
-                decoded,
-                discontinuity || (self.clock.is_some() && position_gap),
-            )
+            Ok(discontinuity || (self.clock.is_some() && position_gap))
         })();
-        let released = unsafe { capture.ReleaseBuffer(frames) };
-        result?;
-        released.context("ReleaseBuffer(capture)")
+        finish_capture_packet(
+            copied,
+            || unsafe { capture.ReleaseBuffer(frames) },
+            |discontinuity| observe(&self.decoded[..frames as usize * 2], discontinuity),
+        )
     }
 }
 impl Drop for Stream {
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+fn finish_capture_packet(
+    copied: anyhow::Result<bool>,
+    release: impl FnOnce() -> windows::core::Result<()>,
+    observe: impl FnOnce(bool) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // Return the native packet even on decode failure. Sample validation
+    // only needs the scratch copy, so it runs outside the WASAPI lease.
+    let released = release();
+    let discontinuity = copied?;
+    released.context("ReleaseBuffer(capture)")?;
+    observe(discontinuity)
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::finish_capture_packet;
+    use std::cell::Cell;
+    use windows::Win32::Foundation::E_FAIL;
+
+    #[test]
+    fn capture_packet_release_precedes_sample_validation() {
+        let released = Cell::new(false);
+        finish_capture_packet(
+            Ok(true),
+            || {
+                released.set(true);
+                Ok(())
+            },
+            |discontinuity| {
+                assert!(released.get());
+                assert!(discontinuity);
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_capture_release_never_validates_samples() {
+        let error = finish_capture_packet(
+            Ok(false),
+            || Err(E_FAIL.into()),
+            |_| panic!("unreleased capture packet entered sample validation"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "ReleaseBuffer(capture)");
+    }
+
+    #[test]
+    fn failed_capture_copy_still_releases_packet() {
+        let released = Cell::new(false);
+        let error = finish_capture_packet(
+            Err(anyhow::anyhow!("invalid capture packet")),
+            || {
+                released.set(true);
+                Ok(())
+            },
+            |_| panic!("invalid capture packet entered sample validation"),
+        )
+        .unwrap_err();
+        assert!(released.get());
+        assert_eq!(error.to_string(), "invalid capture packet");
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use windows::{
+        Win32::System::{
+            Com::{
+                CoTaskMemAlloc,
+                StructuredStorage::{PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0},
+            },
+            Variant::{VT_LPWSTR, VT_UI4},
+        },
+        core::PWSTR,
+    };
+
+    fn string_property(units: &[u16]) -> PROPVARIANT {
+        assert_eq!(units.last(), Some(&0));
+        // The synthetic property owns a COM-task allocation, so its normal
+        // PROPVARIANT Drop clears exactly the allocation used by this test.
+        let pointer = unsafe { CoTaskMemAlloc(std::mem::size_of_val(units)) }.cast::<u16>();
+        assert!(!pointer.is_null());
+        unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len()) };
+        PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    Anonymous: PROPVARIANT_0_0_0 {
+                        pwszVal: PWSTR(pointer),
+                    },
+                    ..Default::default()
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn optional_property_copies_exact_utf16_without_friendly_name_substitution() {
+        let units: Vec<_> = "Description (Adapter) ".encode_utf16().chain([0]).collect();
+        let property = string_property(&units);
+        assert_eq!(property_text(&property).unwrap(), "Description (Adapter) ");
+        assert_eq!(property_text(&string_property(&[0])).unwrap(), "");
+    }
+
+    #[test]
+    fn optional_property_keeps_missing_wrong_type_null_and_invalid_utf16_errors() {
+        assert_eq!(
+            property_text(&PROPVARIANT::default()),
+            Err(PropertyReadError::UnexpectedType { vartype: 0 })
+        );
+        assert_eq!(
+            property_text(&PROPVARIANT::from(7u32)),
+            Err(PropertyReadError::UnexpectedType { vartype: VT_UI4.0 })
+        );
+        let null = PROPVARIANT {
+            Anonymous: PROPVARIANT_0 {
+                Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
+                    vt: VT_LPWSTR,
+                    ..Default::default()
+                }),
+            },
+        };
+        assert_eq!(property_text(&null), Err(PropertyReadError::NullString));
+        assert!(matches!(
+            property_text(&string_property(&[0xd800, 0])),
+            Err(PropertyReadError::InvalidUtf16 { .. })
+        ));
     }
 }

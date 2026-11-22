@@ -16,8 +16,8 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{
-        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_ENOUGH_QUOTA, ERROR_SEM_TIMEOUT,
-        WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_ENOUGH_QUOTA, ERROR_OPERATION_ABORTED,
+        ERROR_SEM_TIMEOUT, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED},
@@ -73,6 +73,42 @@ impl Slot {
             },
         })
     }
+
+    fn finish_error(
+        &mut self,
+        book: &mut SlotBook,
+        ticket: PcmTicket,
+        error: windows::core::Error,
+        waiting: bool,
+        writing: bool,
+        cancel: impl FnOnce(),
+    ) -> Result<Option<PcmCompletion<'_>>, ClientError> {
+        if !waiting && error.code() == ERROR_IO_INCOMPLETE.to_hresult() {
+            return Ok(None);
+        }
+        if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0)
+            || error.code() == ERROR_IO_INCOMPLETE.to_hresult()
+        {
+            cancel();
+            return Err(ClientError::DeadlineExceeded);
+        }
+        self.pending = false;
+        book.finish(ticket).map_err(slot_error)?;
+        if writing_completion_timeout(error.code(), writing) {
+            return Ok(Some(PcmCompletion::CaptureDropped { stamp: self.stamp }));
+        }
+        let failure = pcm_io_error("GetOverlappedResult(VAD PCM)", error);
+        if matches!(failure, ClientError::Cancelled) {
+            // Cancellation releases only this ticket. The transport still
+            // needs its stop intent or an observed admission/epoch change.
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=pcm_terminal_cancel ticket={ticket:?} writing={writing} remaining_pending={}",
+                book.pending(),
+            );
+        }
+        Err(failure)
+    }
 }
 
 /// A completed render packet borrows reusable storage only until the next
@@ -108,6 +144,7 @@ pub struct PcmOwner {
     capabilities: Capabilities,
     shape: PcmShape,
     poisoned: bool,
+    shutdown_faults: ShutdownFaults,
 }
 
 impl PcmOwner {
@@ -123,6 +160,7 @@ impl PcmOwner {
             capabilities,
             shape,
             poisoned: false,
+            shutdown_faults: ShutdownFaults::default(),
         })
     }
 
@@ -238,10 +276,19 @@ impl PcmOwner {
         if let Err(error) = submitted
             && error.code() != ERROR_IO_PENDING.to_hresult()
         {
-            if kernel_quota_rejection(error.code()) {
-                return Err(ClientError::KernelPcmQuotaFull);
+            let failure = pcm_io_error("DeviceIoControl(VAD PCM)", error);
+            if let ClientError::Windows { source, .. } = &failure {
+                log::error!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_submit_fault ticket={ticket:?} writing={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={source}",
+                    pcm.is_some(),
+                    self.shape,
+                    slot.stamp,
+                    self.book.pending(),
+                    source.code().0,
+                );
             }
-            return Err(ClientError::windows("DeviceIoControl(VAD PCM)", error));
+            return Err(failure);
         }
         // Immediate completion also needs collection before slot reuse.
         slot.pending = true;
@@ -311,30 +358,39 @@ impl PcmOwner {
             }
         };
         if let Err(error) = result {
-            if deadline.is_none() && error.code() == ERROR_IO_INCOMPLETE.to_hresult() {
-                return Ok(None);
-            }
-            if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0)
-                || error.code() == ERROR_IO_INCOMPLETE.to_hresult()
+            if error.code() != ERROR_IO_INCOMPLETE.to_hresult()
+                && error.code() != HRESULT::from_win32(WAIT_TIMEOUT.0)
+                && error.code() != ERROR_OPERATION_ABORTED.to_hresult()
+                && !kernel_quota_rejection(error.code())
+                && !writing_completion_timeout(error.code(), writing)
             {
-                // SAFETY: targets this live request; cancellation is not a drain.
-                let _ = unsafe {
-                    CancelIoEx(
-                        raw(&self.lease.handle),
-                        Some(addr_of!((*storage).overlapped)),
-                    )
-                };
-                return Err(ClientError::DeadlineExceeded);
+                // The slot still holds the submitted stamp here. Log before
+                // finish_error releases its ticket or worker cleanup advances
+                // endpoint state; successful/polling IO remains log-free.
+                log::error!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_completion_fault ticket={ticket:?} writing={writing} waiting={} shape={:?} stamp={:?} pending={} hresult={:#010x} error={error}",
+                    deadline.is_some(),
+                    self.shape,
+                    slot.stamp,
+                    self.book.pending(),
+                    error.code().0,
+                );
             }
-            slot.pending = false;
-            self.book.finish(ticket).map_err(slot_error)?;
-            if writing_completion_timeout(error.code(), writing) {
-                return Ok(Some(PcmCompletion::CaptureDropped { stamp: slot.stamp }));
-            }
-            if kernel_quota_rejection(error.code()) {
-                return Err(ClientError::KernelPcmQuotaFull);
-            }
-            return Err(ClientError::windows("GetOverlappedResult(VAD PCM)", error));
+            let handle = raw(&self.lease.handle);
+            // SAFETY: the boxed request stays live through error collection.
+            let overlapped = unsafe { addr_of!((*storage).overlapped) };
+            return slot.finish_error(
+                &mut self.book,
+                ticket,
+                error,
+                deadline.is_some(),
+                writing,
+                || {
+                    // SAFETY: targets this live request; cancellation is not a drain.
+                    let _ = unsafe { CancelIoEx(handle, Some(overlapped)) };
+                },
+            );
         }
         slot.pending = false;
         self.book.finish(ticket).map_err(slot_error)?;
@@ -387,52 +443,44 @@ impl PcmOwner {
             Some(deadline_after(timeout)?)
         };
         self.cancel_all();
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if !slot.pending {
-                continue;
-            }
-            let storage = slot.storage.get();
-            let mut returned = 0;
-            // SAFETY: no storage is reclaimed until terminal completion.
-            let result = unsafe {
-                if let Some(deadline) = deadline {
-                    let milliseconds = wait_milliseconds(deadline, Instant::now())
-                        .ok_or(ClientError::DeadlineExceeded)?;
-                    GetOverlappedResultEx(
-                        raw(&self.lease.handle),
-                        addr_of!((*storage).overlapped),
-                        &mut returned,
-                        milliseconds,
-                        false,
-                    )
-                } else {
-                    GetOverlappedResult(
-                        raw(&self.lease.handle),
-                        addr_of!((*storage).overlapped),
-                        &mut returned,
-                        false,
-                    )
+        let handle = raw(&self.lease.handle);
+        shutdown_slots(
+            &mut self.slots,
+            &mut self.book,
+            &mut self.shutdown_faults,
+            Some(self.shape),
+            |slot| {
+                let storage = slot.storage.get();
+                let mut returned = 0;
+                // SAFETY: no storage is reclaimed until terminal completion.
+                unsafe {
+                    if let Some(deadline) = deadline {
+                        let milliseconds = wait_milliseconds(deadline, Instant::now()).unwrap_or(0);
+                        GetOverlappedResultEx(
+                            handle,
+                            addr_of!((*storage).overlapped),
+                            &mut returned,
+                            milliseconds,
+                            false,
+                        )
+                    } else {
+                        GetOverlappedResult(
+                            handle,
+                            addr_of!((*storage).overlapped),
+                            &mut returned,
+                            false,
+                        )
+                    }
                 }
-            };
-            if let Err(error) = result
-                && (error.code() == ERROR_IO_INCOMPLETE.to_hresult()
-                    || error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0))
-            {
-                return Err(ClientError::DeadlineExceeded);
-            }
-            slot.pending = false;
-            self.book.retire_slot(index);
-        }
-        // All collected tickets are retired without resetting write sequence.
-        // Preserve serials too: stale tickets cannot alias a fresh request.
-        Ok(())
+            },
+        )
     }
 
     /// Cancel every outstanding request and collect what the driver completes
-    /// within `quick`. Returns true when everything drained. Requests the
-    /// driver still holds move the whole owner into `residual` — a pure move,
-    /// no allocation — for the worker to drain opportunistically between pump
-    /// iterations.
+    /// within `quick`. Returns true when everything drained without faults.
+    /// Pending requests or retained terminal faults move the whole owner into
+    /// `residual` for the worker to collect and report. Moving is allocation
+    /// free; formatting terminal faults may allocate on this non-RT path.
     ///
     /// A driver may hold cancelled overlapped requests through its own gate
     /// cycle: on the 2026-10-23 night run both transport workers froze for
@@ -463,6 +511,80 @@ impl PcmOwner {
                 };
             }
         }
+    }
+}
+
+#[derive(Default)]
+struct ShutdownFaults {
+    codes: [Option<HRESULT>; REQUEST_SLOTS],
+}
+
+impl ShutdownFaults {
+    fn take_error(&mut self) -> Option<ClientError> {
+        std::mem::take(self).error()
+    }
+
+    fn error(&self) -> Option<ClientError> {
+        use std::fmt::Write;
+        let mut message = String::new();
+        for (index, code) in self.codes.iter().enumerate() {
+            if let Some(code) = code {
+                if !message.is_empty() {
+                    message.push_str("; ");
+                }
+                write!(message, "slot={index} HRESULT=0x{:08X}", code.0 as u32)
+                    .expect("writing into String");
+            }
+        }
+        (!message.is_empty()).then(|| ClientError::Io {
+            operation: "VAD PCM shutdown terminal failures",
+            source: std::io::Error::other(message),
+        })
+    }
+}
+
+fn shutdown_slots(
+    slots: &mut [Slot; REQUEST_SLOTS],
+    book: &mut SlotBook,
+    faults: &mut ShutdownFaults,
+    submitted_shape: Option<PcmShape>,
+    mut collect: impl FnMut(&mut Slot) -> windows::core::Result<()>,
+) -> Result<(), ClientError> {
+    for (index, slot) in slots.iter_mut().enumerate() {
+        if !slot.pending {
+            continue;
+        }
+        if let Err(error) = collect(slot) {
+            if error.code() == ERROR_IO_INCOMPLETE.to_hresult()
+                || error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0)
+            {
+                // One incomplete request must not prevent nonblocking probes
+                // of later slots. The shared deadline still bounds all waits.
+                continue;
+            }
+            if error.code() != ERROR_OPERATION_ABORTED.to_hresult() {
+                // Four immutable terminal outcomes, retained across repeated
+                // residual probes. Cancellation is not an IO fault; all other
+                // terminal errors remain cleanup failures even after drain.
+                faults.codes[index] = Some(error.code());
+                log::warn!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_shutdown_terminal_fault slot={index} error={error:?} submitted_shape={submitted_shape:?} stamp={:?}",
+                    slot.stamp,
+                );
+            }
+        }
+        slot.pending = false;
+        book.retire_slot(index);
+    }
+    // A failed terminal request relinquishes its storage, but not its failure
+    // evidence. Report it even when another slot remains pending for Drop.
+    if let Some(error) = faults.error() {
+        Err(error)
+    } else if book.pending() != 0 {
+        Err(ClientError::DeadlineExceeded)
+    } else {
+        Ok(())
     }
 }
 
@@ -501,6 +623,19 @@ fn kernel_quota_rejection(code: HRESULT) -> bool {
     code == ERROR_NOT_ENOUGH_QUOTA.to_hresult()
 }
 
+// The driver can complete a retired stamp before DeviceIoControl returns or
+// after the caller begins collecting its overlapped ticket.
+fn pcm_io_error(operation: &'static str, error: windows::core::Error) -> ClientError {
+    let code = error.code();
+    if code == ERROR_OPERATION_ABORTED.to_hresult() {
+        ClientError::Cancelled
+    } else if kernel_quota_rejection(code) {
+        ClientError::KernelPcmQuotaFull
+    } else {
+        ClientError::windows(operation, error)
+    }
+}
+
 impl Drop for PcmOwner {
     fn drop(&mut self) {
         self.cancel_all();
@@ -524,26 +659,29 @@ impl Drop for PcmOwner {
     }
 }
 
-/// A retired [`PcmOwner`] whose cancelled requests the driver had not
-/// completed by the retire bound. The session lease slot is already released;
-/// only the duplicate handle and the still-pending slots remain. Ownership
-/// stays with the pumping worker, parked in preallocated slots and collected
-/// by non-blocking probes between iterations — never a second thread, lock,
-/// or heap allocation.
+/// A retired [`PcmOwner`] with pending requests or terminal cleanup faults.
+/// The session lease slot is already released. Ownership stays with the
+/// pumping worker in preallocated slots, collected by non-blocking probes
+/// between iterations. Fault formatting may allocate on this non-RT path.
 pub struct ResidualPcm {
     owner: PcmOwner,
 }
 
 impl ResidualPcm {
+    pub(crate) fn take_shutdown_failure(&mut self) -> Option<ClientError> {
+        self.owner.shutdown_faults.take_error()
+    }
+
     /// Requests the driver still holds. Diagnostics only.
     pub fn pending(&self) -> usize {
         self.owner.pending()
     }
 
     /// Collect completions until `timeout` elapses; `Duration::ZERO` is a pure
-    /// non-blocking probe. Returns whether every cancelled request reached
-    /// terminal status. A false return leaves the residual valid for a later
-    /// retry; Drop performs the final drain.
+    /// non-blocking probe. Returns whether shutdown succeeded without faults.
+    /// A false result does not imply pending IO: check [`Self::pending`] and
+    /// retain terminal faults before releasing an already-drained residual.
+    /// Drop performs the final drain for requests still pending.
     pub fn drain(&mut self, timeout: Duration) -> bool {
         self.owner.shutdown(timeout).is_ok()
     }
@@ -571,10 +709,241 @@ fn slot_error(error: SlotError) -> ClientError {
 mod tests {
     use super::*;
     use windows::Win32::Foundation::{
-        ERROR_OPERATION_ABORTED, ERROR_SEM_TIMEOUT, RtlNtStatusToDosError, STATUS_IO_TIMEOUT,
-        STATUS_QUOTA_EXCEEDED,
+        ERROR_SEM_TIMEOUT, RtlNtStatusToDosError, STATUS_IO_TIMEOUT, STATUS_QUOTA_EXCEEDED,
     };
     use windows::Win32::System::Threading::SetEvent;
+
+    #[test]
+    fn pcm_cancel_shutdown_fault_transfer_is_once_and_keeps_later_distinct_faults() {
+        use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_DEVICE_NOT_CONNECTED};
+        let mut faults = ShutdownFaults::default();
+        faults.codes[0] = Some(ERROR_DEVICE_NOT_CONNECTED.to_hresult());
+        let first = faults.take_error().expect("first fault must transfer");
+        assert!(first.to_string().contains("slot=0 HRESULT=0x8007048F"));
+        assert!(
+            faults.take_error().is_none(),
+            "a residual probe must not repeat transferred faults"
+        );
+        faults.codes[2] = Some(ERROR_ACCESS_DENIED.to_hresult());
+        let later = faults
+            .take_error()
+            .expect("a later terminal fault must transfer");
+        let text = later.to_string();
+        assert!(text.contains("slot=2 HRESULT=0x80070005"), "{text}");
+        assert!(
+            !text.contains("slot=0"),
+            "old faults must not be allocated and reported again"
+        );
+        assert!(faults.take_error().is_none());
+    }
+
+    #[test]
+    fn pcm_cancel_shutdown_drains_every_ticket_and_retains_distinct_terminal_faults() {
+        use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_DEVICE_NOT_CONNECTED};
+        let mut slots: [Slot; REQUEST_SLOTS] = std::array::from_fn(|_| Slot::new().unwrap());
+        let mut book = SlotBook::new().unwrap();
+        let tickets: [_; REQUEST_SLOTS] = std::array::from_fn(|_| book.reserve().unwrap());
+        for slot in &mut slots {
+            slot.pending = true;
+        }
+        let mut faults = ShutdownFaults::default();
+        let codes = [
+            ERROR_DEVICE_NOT_CONNECTED.to_hresult(),
+            ERROR_OPERATION_ABORTED.to_hresult(),
+            ERROR_ACCESS_DENIED.to_hresult(),
+        ];
+        let mut calls = 0;
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
+            let index = calls;
+            calls += 1;
+            if index < codes.len() {
+                Err(windows::core::Error::from_hresult(codes[index]))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(
+            calls, REQUEST_SLOTS,
+            "terminal faults must not short-circuit peer drain"
+        );
+        assert_eq!(book.pending(), 0);
+        assert!(slots.iter().all(|slot| !slot.pending));
+        assert!(tickets.iter().all(|&ticket| book.check(ticket).is_err()));
+        let error = result.expect_err("non-cancel terminal faults must reach cleanup result");
+        let text = error.to_string();
+        assert!(
+            text.contains("slot=0") && text.contains("0x8007048F"),
+            "{text}"
+        );
+        assert!(
+            text.contains("slot=2") && text.contains("0x80070005"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("0x800703E3"),
+            "expected cancelled completion is not a fault"
+        );
+        assert!(
+            faults.error().is_some(),
+            "fault evidence survives a later drain probe"
+        );
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
+            panic!("already drained")
+        });
+        assert!(
+            result.is_err(),
+            "a second probe must not erase a terminal cleanup failure"
+        );
+    }
+
+    #[test]
+    fn pcm_cancel_shutdown_pending_peer_does_not_block_terminal_peers_or_lose_errors() {
+        use windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED;
+        let mut slots: [Slot; REQUEST_SLOTS] = std::array::from_fn(|_| Slot::new().unwrap());
+        let mut book = SlotBook::new().unwrap();
+        let tickets: [_; REQUEST_SLOTS] = std::array::from_fn(|_| book.reserve().unwrap());
+        for slot in &mut slots {
+            slot.pending = true;
+        }
+        let mut faults = ShutdownFaults::default();
+        let mut calls = 0;
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
+            let code = match calls {
+                0 => ERROR_IO_INCOMPLETE.to_hresult(),
+                1 => ERROR_DEVICE_NOT_CONNECTED.to_hresult(),
+                _ => ERROR_OPERATION_ABORTED.to_hresult(),
+            };
+            calls += 1;
+            Err(windows::core::Error::from_hresult(code))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, REQUEST_SLOTS);
+        assert_eq!(book.pending(), 1);
+        assert!(slots[0].pending && book.check(tickets[0]).is_ok());
+        assert!(slots[1..].iter().all(|slot| !slot.pending));
+        assert!(faults.error().is_some());
+        let result = shutdown_slots(&mut slots, &mut book, &mut faults, None, |_| {
+            Err(windows::core::Error::from_hresult(
+                ERROR_OPERATION_ABORTED.to_hresult(),
+            ))
+        });
+        assert_eq!(book.pending(), 0);
+        assert!(
+            result.is_err(),
+            "later cancellation cannot erase the distinct earlier fault"
+        );
+    }
+
+    #[test]
+    fn pcm_cancel_terminal_abort_retires_only_the_completed_ticket_and_stays_typed() {
+        for writing in [false, true] {
+            let mut book = SlotBook::new().unwrap();
+            let ticket = book.reserve().unwrap();
+            let other = book.reserve().unwrap();
+            let mut slot = Slot::new().unwrap();
+            slot.pending = true;
+            let result = slot.finish_error(
+                &mut book,
+                ticket,
+                windows::core::Error::from_hresult(ERROR_OPERATION_ABORTED.to_hresult()),
+                false,
+                writing,
+                || panic!("terminal completion must not request another cancellation"),
+            );
+            assert!(matches!(result, Err(ClientError::Cancelled)), "{result:?}");
+            assert!(!slot.pending);
+            assert!(book.check(ticket).is_err());
+            assert!(book.check(other).is_ok());
+            assert_eq!(
+                book.pending(),
+                1,
+                "peer requests still need their own drain"
+            );
+        }
+    }
+
+    #[test]
+    fn pcm_cancel_is_typed_when_submission_completes_synchronously() {
+        use windows::Win32::Foundation::{ERROR_REVISION_MISMATCH, STATUS_CANCELLED};
+
+        // SAFETY: pure OS status translation with no device or ticket involved.
+        let abort = HRESULT::from_win32(unsafe { RtlNtStatusToDosError(STATUS_CANCELLED) });
+        assert_eq!(abort, ERROR_OPERATION_ABORTED.to_hresult());
+        let operation = "DeviceIoControl(VAD PCM)";
+        assert!(matches!(
+            pcm_io_error(operation, windows::core::Error::from_hresult(abort)),
+            ClientError::Cancelled
+        ));
+        let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+        assert!(matches!(
+            pcm_io_error(operation, windows::core::Error::from_hresult(mismatch)),
+            ClientError::Windows { operation: reported, source }
+                if reported == operation && source.code() == mismatch
+        ));
+    }
+
+    #[test]
+    fn pcm_cancel_timeout_and_incomplete_never_release_pending_storage() {
+        for (code, waiting) in [
+            (ERROR_IO_INCOMPLETE.to_hresult(), false),
+            (ERROR_IO_INCOMPLETE.to_hresult(), true),
+            (HRESULT::from_win32(WAIT_TIMEOUT.0), true),
+        ] {
+            let mut book = SlotBook::new().unwrap();
+            let ticket = book.reserve().unwrap();
+            let mut slot = Slot::new().unwrap();
+            slot.pending = true;
+            let cancelled = std::cell::Cell::new(false);
+            let result = slot.finish_error(
+                &mut book,
+                ticket,
+                windows::core::Error::from_hresult(code),
+                waiting,
+                false,
+                || cancelled.set(true),
+            );
+            if waiting {
+                assert!(matches!(result, Err(ClientError::DeadlineExceeded)));
+                assert!(cancelled.get());
+            } else {
+                assert!(matches!(result, Ok(None)));
+                assert!(!cancelled.get());
+            }
+            assert!(slot.pending && book.check(ticket).is_ok());
+            assert_eq!(book.pending(), 1);
+        }
+    }
+
+    #[test]
+    fn pcm_cancel_does_not_convert_other_terminal_faults_to_cancellation() {
+        use windows::Win32::Foundation::{ERROR_DEVICE_NOT_CONNECTED, ERROR_REVISION_MISMATCH};
+        for code in [ERROR_DEVICE_NOT_CONNECTED, ERROR_REVISION_MISMATCH] {
+            for writing in [false, true] {
+                let mut book = SlotBook::new().unwrap();
+                let ticket = book.reserve().unwrap();
+                let other = book.reserve().unwrap();
+                let mut slot = Slot::new().unwrap();
+                slot.pending = true;
+                let result = slot.finish_error(
+                    &mut book,
+                    ticket,
+                    windows::core::Error::from_hresult(code.to_hresult()),
+                    false,
+                    writing,
+                    || panic!("already terminal"),
+                );
+                assert!(
+                    matches!(result, Err(ClientError::Windows { operation, source })
+                    if operation == "GetOverlappedResult(VAD PCM)"
+                        && source.code() == code.to_hresult())
+                );
+                assert!(!slot.pending);
+                assert!(book.check(ticket).is_err());
+                assert!(book.check(other).is_ok());
+                assert_eq!(book.pending(), 1, "peer requests still require draining");
+            }
+        }
+    }
 
     #[test]
     fn expired_capture_packet_uses_the_windows_completion_error_domain() {

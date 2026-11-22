@@ -2,6 +2,7 @@ use moiren_engine::{boundary::*, buffer::*, processor::ProcessContext, sample::P
 
 fn context(frames: usize) -> ProcessContext {
     ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames,

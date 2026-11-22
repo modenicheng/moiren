@@ -8,15 +8,17 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VAD_PCM_QUEUE, VadPcmQueue)
 static EVT_WDF_IO_QUEUE_IO_CANCELED_ON_QUEUE CancelQueued;
 static EVT_WDF_OBJECT_CONTEXT_DESTROY DestroyQueue;
 
-static void DropCountLocked(VAD_PCM_REQUEST* context)
+static bool DropCountLocked(VAD_PCM_REQUEST* context)
 {
-    if (InterlockedExchange(&context->Counted, 0) != 0) {
+    const bool admitted = InterlockedExchange(&context->Counted, 0) != 0;
+    if (admitted) {
         auto& slot = context->Shared->Slots[context->Index];
         NT_ASSERT(slot.Id == context->Header.EndpointId && slot.PendingRequests != 0);
         if (slot.Id == context->Header.EndpointId && slot.PendingRequests != 0) {
             --slot.PendingRequests;
         }
     }
+    return admitted;
 }
 
 static void DropCount(VAD_PCM_REQUEST* context)
@@ -49,14 +51,18 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[index];
     const auto& header = context->Header;
+    const auto intent = capture ? MOIREN_VAD_INTENT_MICROPHONE : MOIREN_VAD_INTENT_PLAYBACK;
+    const bool matchesEndpoint = slot.Channels == header.Channels && slot.Intent == intent;
     NTSTATUS status = STATUS_SUCCESS;
     if (InterlockedCompareExchange(&shared->PcmOnline, 0, 0) == 0) {
         status = STATUS_DEVICE_REMOVED;
-    } else if (!vad::SameStream(slot, header)) {
-        status = STATUS_REVISION_MISMATCH;
-    } else if (slot.SampleFormat != header.SampleFormat ||
-        slot.PacketFrames != header.Frames || slot.Channels != header.Channels ||
-        slot.Intent != (capture ? MOIREN_VAD_INTENT_MICROPHONE : MOIREN_VAD_INTENT_PLAYBACK)) {
+    } else if (!vad::CanQueuePcm(slot, header)) {
+        // An overlapped request can reach this callback after native ACX
+        // advances the stamp. Cancel the retired work before claiming quota.
+        status = matchesEndpoint && vad::RetiredPcmStamp(slot, header)
+            ? STATUS_CANCELLED : STATUS_REVISION_MISMATCH;
+    } else if (!matchesEndpoint || slot.SampleFormat != header.SampleFormat ||
+        slot.PacketFrames != header.Frames) {
         status = STATUS_INVALID_PARAMETER;
     } else if (slot.PendingRequests >= MOIREN_VAD_REQUEST_SLOTS) {
         status = STATUS_QUOTA_EXCEEDED;
@@ -70,6 +76,13 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
         if (capture) {
             slot.LastSequence = header.Sequence;
             slot.HasSequence = 1;
+            // A safe reservation-side pre-forward boundary, NOT actual queue
+            // insertion or proof that forward succeeds. Never touch a request
+            // after successful WdfRequestForwardToIoQueue: WDF may complete it.
+            shared->UnservedDiagnostics[index].RecordPreForward(
+                header.StreamGeneration, {header.GateEpoch, header.Sequence,
+                    header.Qpc, static_cast<uint64_t>(
+                        KeQueryPerformanceCounter(nullptr).QuadPart)});
         }
     }
     KeReleaseSpinLock(&shared->Lock, irql);
@@ -122,24 +135,59 @@ VAD_PAGE NTSTATUS VadPcmInitialize(WDFDEVICE device)
     return STATUS_SUCCESS;
 }
 
-VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart)
+_Use_decl_annotations_
+VAD_PAGE VadPcmDrainGuard::VadPcmDrainGuard(VAD_SHARED* shared, ULONG index) : Index(index)
 {
     PAGED_CODE();
-    if (!shared->PcmInitialized || !ExAcquireRundownProtection(&shared->PcmRundown)) {
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (!shared->PcmInitialized) {
+        return;
+    }
+    KeEnterCriticalRegion();
+    if (!ExAcquireRundownProtection(&shared->PcmRundown)) {
+        KeLeaveCriticalRegion();
         return;
     }
     KeWaitForSingleObject(&shared->PcmDrain[index], Executive, KernelMode, FALSE, nullptr);
-    const auto queue = shared->PcmQueues[index];
+    Shared = shared;
+}
+
+_Use_decl_annotations_
+VAD_PAGE VadPcmDrainGuard::~VadPcmDrainGuard()
+{
+    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (Shared != nullptr) {
+        KeReleaseMutex(&Shared->PcmDrain[Index], FALSE);
+        ExReleaseRundownProtection(&Shared->PcmRundown);
+        KeLeaveCriticalRegion();
+    }
+}
+
+_Use_decl_annotations_
+VAD_PAGE void VadPcmDrainGuard::Purge(bool restart)
+{
+    PAGED_CODE();
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (Shared == nullptr) {
+        return;
+    }
+    const auto queue = Shared->PcmQueues[Index];
     if (queue != nullptr) {
         // Called only outside ALL EvtIo callbacks (including other queues).
         // Cancellation never enters Admin, Lifecycle, or PcmDrain.
         WdfIoQueuePurgeSynchronously(queue);
-        if (restart && InterlockedCompareExchange(&shared->PcmOnline, 0, 0) != 0) {
+        if (restart && InterlockedCompareExchange(&Shared->PcmOnline, 0, 0) != 0) {
             WdfIoQueueStart(queue);
         }
     }
-    KeReleaseMutex(&shared->PcmDrain[index], FALSE);
-    ExReleaseRundownProtection(&shared->PcmRundown);
+}
+
+VAD_PAGE void VadPcmPurge(VAD_SHARED* shared, ULONG index, bool restart)
+{
+    PAGED_CODE();
+    VadPcmDrainGuard drain(shared, index);
+    drain.Purge(restart);
 }
 
 VAD_PAGE void VadPcmShutdown(VAD_SHARED* shared)
@@ -267,19 +315,37 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
     auto& slot = shared->Slots[index];
     bool copied = false;
     const bool capture = slot.Intent == MOIREN_VAD_INTENT_MICROPHONE;
+    auto& diagnostic = shared->PcmDiagnostics[index];
+    // Stack-only accumulation: a rejected WRITE is not an unserved callback
+    // if a later request in the unchanged bounded loop supplies this packet.
+    uint16_t unservedReasons = 0;
+    uint16_t retrieveCalls = 0;
+    NTSTATUS retrieveStatus = STATUS_SUCCESS;
     const ULONG bytes = frames * blockAlign;
     if (capture) {
         RtlZeroMemory(buffer, bytes);
     }
     if (slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0) {
-        for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS; ++count) {
+        // A native packet can satisfy only one request. Retire stale requests
+        // at the head, but once the first
+        // current request is found, leave remaining current requests queued
+        // for later native packets.
+        for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS && !copied; ++count) {
             WDFREQUEST request = nullptr;
-            if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
-                &request))) {
+            retrieveStatus = WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
+                &request);
+            ++retrieveCalls;
+            if (!NT_SUCCESS(retrieveStatus)) {
+                unservedReasons |= vad::UnservedEmpty;
+                if (capture && slot.GateOpen != 0 &&
+                    slot.StreamState == MOIREN_VAD_STREAM_RUNNING) {
+                    diagnostic.Record({vad::PcmWriteOutcome::Empty,
+                        slot.AdmissionGeneration, sequence, 0, 0, qpc, 0, 0, frames});
+                }
                 break;
             }
             auto context = VadPcmRequest(request);
-            DropCountLocked(context);
+            const bool admitted = DropCountLocked(context);
             const bool appended = batch->Completions.Append(
                 {request, STATUS_REVISION_MISMATCH, 0});
             NT_ASSERT(appended);
@@ -289,34 +355,83 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             if (!vad::SameStream(slot, header) ||
                 slot.SampleFormat != header.SampleFormat || header.Frames != frames ||
                 header.Channels != slot.Channels || bytes > MOIREN_VAD_MAX_PCM_BYTES) {
+                // The dequeued request was admitted before this exact
+                // endpoint advanced its fence. No bytes can cross the
+                // fence, and the caller can observe the cancellation.
+                if (admitted && vad::RetiredPcmStamp(slot, header)) {
+                    completion.Status = STATUS_CANCELLED;
+                }
+                unservedReasons |= vad::UnservedNoCurrent;
                 continue;
             }
             if (capture) {
                 LARGE_INTEGER frequency;
-                (void)KeQueryPerformanceCounter(&frequency);
+                const auto checked = KeQueryPerformanceCounter(&frequency);
                 const uint64_t period = static_cast<uint64_t>(frequency.QuadPart) *
                     frames / MOIREN_VAD_SAMPLE_RATE;
-                if (header.Qpc > qpc || qpc - header.Qpc > period) {
+                const auto outcome = vad::ClassifyPcmWrite(header.Qpc, qpc, period);
+                diagnostic.Record({outcome, slot.AdmissionGeneration, sequence,
+                    header.Sequence, header.Qpc, qpc,
+                    static_cast<uint64_t>(checked.QuadPart), period, frames});
+                if (outcome != vad::PcmWriteOutcome::Success) {
+                    if (outcome == vad::PcmWriteOutcome::TooOld) {
+                        unservedReasons |= vad::UnservedTooOld;
+                    }
                     ++slot.DroppedPackets;
                     completion.Status = STATUS_IO_TIMEOUT;
                     continue;
                 }
                 RtlCopyMemory(buffer, context->Buffer, bytes);
+                batch->CaptureCopied = true;
+                batch->CaptureGateEpoch = slot.AdmissionGeneration;
+                batch->CaptureRequestSequence = header.Sequence;
+                if (shared->CaptureDiagnostics[index].NeedsCopy()) {
+                    batch->CapturePrefix = vad::audio::CapturePrefix::ReadBack(
+                        context->Buffer, buffer, bytes);
+                }
                 completion.Information = bytes;
             } else {
                 header.Sequence = sequence;
                 header.Qpc = qpc;
                 RtlCopyMemory(context->Buffer, &header, sizeof(header));
                 RtlCopyMemory(static_cast<PUCHAR>(context->Buffer) + sizeof(header), buffer, bytes);
+#if MOIREN_VAD_PLAYBACK_COPY_DIAGNOSTIC
+                shared->PlaybackCopyDiagnostics[index].Observe(
+                    vad::PlaybackCopyIdentity::From(slot, frames, blockAlign), buffer,
+                    static_cast<PUCHAR>(context->Buffer) + sizeof(header), sequence, qpc, [] {
+                        LARGE_INTEGER frequency;
+                        const auto tick = KeQueryPerformanceCounter(&frequency);
+                        return vad::PlaybackCopyTime{static_cast<uint64_t>(tick.QuadPart),
+                            static_cast<uint64_t>(frequency.QuadPart)};
+                    });
+#endif
                 completion.Information = sizeof(header) + bytes;
             }
             completion.Status = STATUS_SUCCESS;
             copied = true;
-            break; // One native packet, never drain multiple current packets.
         }
         if (!copied) {
             if (capture) {
+                if (slot.GateOpen != 0 &&
+                    slot.StreamState == MOIREN_VAD_STREAM_RUNNING) {
+                    // Four retired requests can exhaust the bounded loop
+                    // without reaching the empty-queue or freshness branch.
+                    diagnostic.Record({vad::PcmWriteOutcome::NoCurrentRequest,
+                        slot.AdmissionGeneration, sequence, 0, 0, qpc, 0, 0, frames});
+                    shared->UnservedDiagnostics[index].RecordUnserved(
+                        slot.StreamGeneration, slot.AdmissionGeneration,
+                        batch->Callback, retrieveStatus, retrieveCalls,
+                        unservedReasons != 0 ? unservedReasons :
+                            static_cast<uint16_t>(vad::UnservedNoCurrent));
+                }
+                const auto silenceBefore = slot.SilencePackets;
                 ++slot.SilencePackets;
+                shared->CaptureDiagnostics[index].RecordNoCopy(
+                    {slot.Id, slot.Session, slot.StreamGeneration, slot.AdmissionGeneration,
+                        sequence, qpc, batch->Callback.Frequency, silenceBefore, slot.SilencePackets,
+                        0, 0, slot.State, slot.StreamState, slot.GateOpen, slot.AudioReady,
+                        slot.SampleFormat, slot.Channels, frames,
+                        0, 0, 0, 0, 0, 0, false, false, false});
             } else {
                 ++slot.DroppedPackets;
             }

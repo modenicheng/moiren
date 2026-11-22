@@ -4,7 +4,9 @@ use crate::service::test_backend as meter_backend;
 mod mixer_states;
 
 fn meter_service() -> anyhow::Result<ServiceRuntime> {
-    use crate::service::{GraphEdit, InputSelection, ManagedDriver, ServiceGraph, SessionSpec};
+    use crate::service::{
+        GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceGraph, SessionSpec,
+    };
     use moiren_core::graph::NodeKind;
     let backend = meter_backend::FakeBackend::default();
     backend
@@ -63,6 +65,7 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
             output_endpoint_id: "capture-output".into(),
             gain: 0.75,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .map_err(|error| anyhow::anyhow!("capture start: {error:?}"))?;
@@ -530,13 +533,16 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     }
                     // Inspect a real catalog row without binding resources or
                     // submitting any audio request. The override stays a draft.
-                    shell.update(cx, |s, cx| {
-                        let id = s.state.read(cx).snapshot.catalog.outputs.first()
-                            .map(|row| row.endpoint_id.clone());
-                        if let Some(id) = id {
-                            s.inspect_device(id.clone(), cx);
-                            settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
-                        }
+                    let _ = window.update(cx, |_, window, cx| {
+                        shell.update(cx, |s, cx| {
+                            let id = s.state.read(cx).snapshot.catalog.outputs.first()
+                                .map(|row| row.endpoint_id.clone());
+                            if let Some(id) = id {
+                                let _ = window;
+                                s.inspect_device(id.clone(), cx);
+                                settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
+                            }
+                        });
                     });
                     cx.background_executor().timer(Duration::from_millis(100)).await;
                     capture(cx, directory.join(format!("{name}-device-override.png")));

@@ -1,5 +1,6 @@
 use super::super::{Page, WorkspaceView};
 use super::model::reorder;
+use crate::service::RunLimit;
 use crate::ui::editors::fader_readout_gain;
 use crate::ui::shell::StudioShell;
 use crate::ui::shell::test_harness::{
@@ -381,6 +382,7 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -543,6 +545,7 @@ fn mixer_meter_silence_stands_down_the_frame_loop_until_data_returns(cx: &mut Te
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -615,6 +618,7 @@ fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) 
                 output_endpoint_id: "output".into(),
                 gain: 1.,
                 pan: 0.,
+                limit: RunLimit::UntilStopped,
                 max_block_frames: 256,
             });
             let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
@@ -685,6 +689,7 @@ fn mixer_probe_flag_survives_a_same_device_sibling_offscreen(cx: &mut TestAppCon
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1882,6 +1887,7 @@ fn mixer_stands_down_while_the_capture_tap_still_has_signal(cx: &mut TestAppCont
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1976,6 +1982,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2146,6 +2153,7 @@ fn mixer_strip_readouts_follow_the_marker_and_share_one_shape_per_text(cx: &mut 
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2315,6 +2323,7 @@ fn mixer_channel_labels_share_one_shape_per_text_across_meter_frames(cx: &mut Te
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();

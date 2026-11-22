@@ -18,7 +18,7 @@ pub(super) fn update_vad_catalog(context: &mut ServiceContext) {
     };
     let live_exports = statuses
         .iter()
-        .filter(|status| status.resource != super::super::ExportResourceState::Absent)
+        .filter(|status| status.resource != crate::service::ExportResourceState::Absent)
         .map(|status| status.intent.endpoint_id)
         .collect::<std::collections::BTreeSet<_>>();
     let mut owned = context.catalog.vad_endpoints.clone();
@@ -26,8 +26,8 @@ pub(super) fn update_vad_catalog(context: &mut ServiceContext) {
     for status in statuses {
         if !matches!(
             status.resource,
-            super::super::ExportResourceState::Present
-                | super::super::ExportResourceState::Removing
+            crate::service::ExportResourceState::Present
+                | crate::service::ExportResourceState::Removing
         ) {
             continue;
         }
@@ -73,13 +73,13 @@ impl ManagedDriver {
         let force = self.plugin_scan.force;
         let job: Job = Box::new(move || {
             let scan = if force {
-                super::super::run_forced_plugin_scan
+                crate::service::run_forced_plugin_scan
             } else {
-                super::super::run_sandbox_scan
+                crate::service::run_sandbox_scan
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(scan))
                 .unwrap_or_else(|_| {
-                    Err(super::super::BackendError::new(
+                    Err(crate::service::BackendError::new(
                         "plugin-scan",
                         "the scan worker panicked",
                     ))

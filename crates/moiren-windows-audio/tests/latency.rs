@@ -1,13 +1,29 @@
 use moiren_windows_audio::{
     clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
     latency::{
-        CallbackObservation, LatencyRecorder, MeasurementMethod, TRACE_CAPACITY, TelemetryMode,
-        qpc_ticks_to_100ns,
+        CallbackObservation, DeviceClockObservation, LatencyRecorder, MeasurementMethod,
+        TRACE_CAPACITY, TelemetryMode, qpc_ticks_to_100ns,
     },
     stats::SILENT,
 };
 
 mod common;
+
+#[test]
+fn event_publication_is_allocation_free_after_retention_wraps() {
+    let (mut writer, observer) = moiren_windows_audio::latency::events::event_history();
+    common::alloc_guard::assert_allocates_nothing(|| {
+        for sequence in 1..=1024 {
+            writer.record(64, Some(sequence));
+        }
+        writer.record(64, None);
+        writer.record(64, Some(1));
+    });
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.events.len(), 256);
+    assert_eq!(snapshot.total_events, 1026);
+    assert_eq!(snapshot.unavailable_clocks, 1);
+}
 
 fn callback(wake: u64, duration: u64) -> CallbackObservation {
     CallbackObservation {
@@ -128,6 +144,35 @@ fn snapshot_is_independent_and_serializes_only_valid_trace_entries() {
 }
 
 #[test]
+fn trace_retains_paired_native_device_clock_position_and_qpc() {
+    let mut recorder = LatencyRecorder::new(TelemetryMode::Trace);
+    recorder.record_with_device_clock(
+        callback(100, 20),
+        Some(DeviceClockObservation {
+            position_units: 48_000,
+            qpc_100ns: 200,
+            hresult: 0,
+        }),
+    );
+
+    let snapshot = recorder.snapshot();
+    let record = snapshot.trace.records().first().unwrap();
+    assert_eq!(
+        record.device_clock,
+        Some(DeviceClockObservation {
+            position_units: 48_000,
+            qpc_100ns: 200,
+            hresult: 0,
+        })
+    );
+
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(json["trace"][0]["device_clock"]["position_units"], 48_000);
+    assert_eq!(json["trace"][0]["device_clock"]["qpc_100ns"], 200);
+    assert_eq!(json["trace"][0]["device_clock"]["hresult"], 0);
+}
+
+#[test]
 fn capture_has_no_invented_render_padding_samples() {
     let mut recorder = LatencyRecorder::new(TelemetryMode::Summary);
     recorder.record(CallbackObservation {
@@ -183,13 +228,31 @@ fn trace_overflow_keeps_audio_complete_without_allocation_or_deallocation() {
                     .transferred_frames,
                 4
             );
-            recorder.record(callback(100 + index as u64 * 100, 20));
+            recorder.record_with_device_clock(
+                callback(100 + index as u64 * 100, 20),
+                Some(DeviceClockObservation {
+                    position_units: index as u64 * 4,
+                    qpc_100ns: 100 + index as u64 * 100,
+                    hresult: if index % 2 == 0 { 0 } else { -1 },
+                }),
+            );
         }
     });
     // Snapshot ownership is finalized off the audio path, after recording ends.
     let snapshot = recorder.snapshot();
     assert_eq!(snapshot.trace.records().len(), TRACE_CAPACITY);
     assert_eq!(snapshot.trace_dropped, 17);
+    for (index, record) in snapshot.trace.records().iter().enumerate() {
+        assert_eq!(
+            record.device_clock,
+            Some(DeviceClockObservation {
+                position_units: index as u64 * 4,
+                qpc_100ns: 100 + index as u64 * 100,
+                hresult: if index % 2 == 0 { 0 } else { -1 },
+            }),
+            "overflow must retain the original clock sample at {index}"
+        );
+    }
     assert_eq!(
         snapshot.callback_duration_100ns.samples,
         (TRACE_CAPACITY + 17) as u64

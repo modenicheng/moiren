@@ -4,7 +4,7 @@ use moiren_engine::audio_config::{AudioSettings, ProcessingSettings};
 use serde::{Deserialize, Serialize};
 
 use super::{ExportDocument, GraphDocument, PersistenceError};
-use crate::service::{AudioLatencyProfile, InputSelection, SessionSpec};
+use crate::service::{AudioLatencyProfile, InputSelection, RunLimit, SessionSpec};
 
 pub const PROJECT_VERSION: u32 = 2;
 pub const PREFERENCES_VERSION: u32 = 2;
@@ -161,23 +161,10 @@ impl ProjectDocument {
 pub struct SessionDocument {
     pub source: SourceDocument,
     pub output_endpoint_id: String,
-    /// Legacy run limit, retired with the always-on run model: any value is
-    /// accepted on load and dropped; new documents never serialize it.
-    #[serde(default, skip_serializing, deserialize_with = "ignore_legacy")]
-    pub limit: (),
+    pub limit: RunLimitDocument,
     pub gain: f64,
     pub pan: f64,
     pub max_block_frames: usize,
-}
-
-/// Consume any legacy value so `deny_unknown_fields` still accepts old
-/// documents carrying the retired run-limit field.
-fn ignore_legacy<'de, D>(deserializer: D) -> Result<(), D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    serde::de::IgnoredAny::deserialize(deserializer)?;
-    Ok(())
 }
 
 impl From<&SessionSpec> for SessionDocument {
@@ -185,7 +172,7 @@ impl From<&SessionSpec> for SessionDocument {
         Self {
             source: (&spec.source).into(),
             output_endpoint_id: spec.output_endpoint_id.clone(),
-            limit: (),
+            limit: spec.limit.into(),
             gain: spec.gain,
             pan: spec.pan,
             max_block_frames: spec.max_block_frames,
@@ -198,6 +185,14 @@ impl SessionDocument {
         self.source.validate()?;
         validate_identity(&self.output_endpoint_id, "session.output_endpoint_id")?;
         validate_gain_pan(self.gain, self.pan, "session")?;
+        if let RunLimit::Seconds(seconds) = self.limit.into()
+            && !(1..=600).contains(&seconds)
+        {
+            return Err(PersistenceError::invalid(
+                "session.limit",
+                "must be until_stopped or 1..=600 seconds",
+            ));
+        }
         if !(1..=4096).contains(&self.max_block_frames) {
             return Err(PersistenceError::invalid(
                 "session.max_block_frames",
@@ -214,8 +209,34 @@ impl SessionDocument {
             output_endpoint_id: self.output_endpoint_id.clone(),
             gain: self.gain,
             pan: self.pan,
+            limit: self.limit.into(),
             max_block_frames: self.max_block_frames,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunLimitDocument {
+    UntilStopped,
+    Seconds(u16),
+}
+
+impl From<RunLimit> for RunLimitDocument {
+    fn from(value: RunLimit) -> Self {
+        match value {
+            RunLimit::UntilStopped => Self::UntilStopped,
+            RunLimit::Seconds(seconds) => Self::Seconds(seconds),
+        }
+    }
+}
+
+impl From<RunLimitDocument> for RunLimit {
+    fn from(value: RunLimitDocument) -> Self {
+        match value {
+            RunLimitDocument::UntilStopped => Self::UntilStopped,
+            RunLimitDocument::Seconds(seconds) => Self::Seconds(seconds),
+        }
     }
 }
 
@@ -427,6 +448,7 @@ pub struct AppPreferences {
     /// Requested for the next audio apply/start, not a measured device result.
     pub latency_profile: AudioLatencyProfile,
     pub audio: AudioSettings,
+    pub transport_latency: crate::service::TransportLatencySettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
     /// Default recording output directory; `None` resolves to the user's
@@ -451,6 +473,7 @@ impl Default for AppPreferences {
             language: crate::i18n::UiLanguage::default(),
             latency_profile: AudioLatencyProfile::Compatible,
             audio: AudioSettings::default(),
+            transport_latency: crate::service::TransportLatencySettings::default(),
             restore_last_project: false,
             last_project_path: None,
             recording_directory: None,
@@ -489,6 +512,9 @@ impl AppPreferences {
         self.audio
             .validate()
             .map_err(|error| PersistenceError::invalid("audio", error.to_string()))?;
+        self.transport_latency
+            .validate()
+            .map_err(|error| PersistenceError::invalid("transport_latency", error))?;
         if let Some(path) = &self.last_project_path
             && (path.as_os_str().is_empty() || path.to_string_lossy().contains('\0'))
         {

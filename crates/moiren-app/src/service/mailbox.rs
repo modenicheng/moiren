@@ -93,6 +93,10 @@ impl AppHandle {
             return Err(DispatchError::Exiting);
         }
         match &request {
+            AppRequest::CreateExport { name, channels, .. } => {
+                super::exports::validate_export_name_channels(name, *channels)
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+            }
             AppRequest::LoadProject(document) => document
                 .validate()
                 .map_err(|_| DispatchError::InvalidConfig)?,
@@ -104,6 +108,20 @@ impl AppHandle {
             AppRequest::SetAudioSettings(settings) => settings
                 .validate()
                 .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::SetTransportLatency(settings) => settings
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::ApplyMeasuredProcessBridge(request) => request
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::ApplyWindowedProcessBridge { request, policy } => {
+                request
+                    .validate()
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+                policy
+                    .validate()
+                    .map_err(|_| DispatchError::InvalidConfig)?;
+            }
             AppRequest::SetGainPan { gain, pan } if !model::valid_gain_pan(*gain, *pan) => {
                 return Err(DispatchError::InvalidConfig);
             }
@@ -392,7 +410,7 @@ mod tests {
             assert_eq!(mailbox.try_request(), None);
         }
         settings.processing.sample_rate = 48_000;
-        settings.output.buffer_frames = Some(65);
+        settings.output.buffer_frames = Some(63);
         assert_eq!(
             handle.try_request(AppRequest::SetAudioSettings(settings)),
             Err(DispatchError::InvalidConfig)

@@ -1,4 +1,4 @@
-//! Explicit control-worker Windows endpoint name evidence.
+//! Detached Windows endpoint name evidence and its refresh cache.
 
 use super::{EndpointSnapshot, Intent, MAX_ENDPOINTS, StableEndpointId};
 use moiren_engine::node::VirtualEndpointId;
@@ -19,6 +19,10 @@ pub struct VadEndpointNameObservation {
     pub mmdevice_id: Option<String>,
     /// Raw PKEY_Device_FriendlyName, never the requested/provider name.
     pub name: Option<String>,
+    /// Raw IMMDevice state flags for this exact name observation, not admission.
+    pub device_state: Option<u32>,
+    /// State-read failure independent of a successful raw name read.
+    pub device_state_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -33,12 +37,64 @@ pub struct VadEndpointNameTarget {
     pub error: Option<String>,
 }
 
-#[derive(Clone)]
 struct CacheEntry {
-    identity: [u64; 3],
     observation: VadEndpointNameObservation,
     observed_at: Duration,
-    retry_at: Duration,
+}
+
+impl CacheEntry {
+    fn matches(&self, key: &NameKey) -> bool {
+        self.observation.endpoint_id == key.endpoint_id
+            && self.observation.native_identity == key.identity
+    }
+
+    fn current(&self, now: Duration) -> bool {
+        let interval = if self.observation.name.is_some() {
+            NAME_REFRESH_INTERVAL
+        } else {
+            NEGATIVE_RETRY_INTERVAL
+        };
+        now.saturating_sub(self.observed_at) < interval
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NameKey {
+    endpoint_id: VirtualEndpointId,
+    identity: [u64; 3],
+    stable_id: StableEndpointId,
+    intent: Intent,
+}
+
+impl NameKey {
+    fn eligible(exports: &[VadEndpointNameTarget]) -> Vec<Self> {
+        exports
+            .iter()
+            .take(MAX_ENDPOINTS as usize)
+            .filter_map(|export| {
+                let snapshot = export.snapshot?;
+                let stable_id = StableEndpointId::from_virtual_endpoint_id(export.endpoint_id);
+                if export.removing
+                    || export.error.is_some()
+                    || snapshot.state() != super::PdoState::Present
+                    || snapshot.stable_id() != stable_id
+                    || snapshot.intent() != export.intent
+                {
+                    return None;
+                }
+                Some(Self {
+                    endpoint_id: export.endpoint_id,
+                    identity: [
+                        snapshot.pdo_token().get(),
+                        snapshot.session_epoch(),
+                        snapshot.endpoint_generation(),
+                    ],
+                    stable_id,
+                    intent: export.intent,
+                })
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]
@@ -54,113 +110,131 @@ impl NameObserver {
         clock: &mut C,
     ) -> Vec<VadEndpointNameObservation> {
         let now = clock.now();
-        let mut output = BTreeMap::new();
-        let mut eligible = BTreeMap::new();
-        let mut pending = Vec::new();
-
-        for export in exports.iter().take(MAX_ENDPOINTS as usize) {
-            let Some(snapshot) = export.snapshot else {
-                continue;
-            };
-            if export.removing
-                || export.error.is_some()
-                || snapshot.state() != super::PdoState::Present
-                || snapshot.stable_id()
-                    != StableEndpointId::from_virtual_endpoint_id(export.endpoint_id)
-                || snapshot.intent() != export.intent
-            {
-                continue;
-            }
-
-            let identity = [
-                snapshot.pdo_token().get(),
-                snapshot.session_epoch(),
-                snapshot.endpoint_generation(),
-            ];
-            eligible.insert(export.endpoint_id, identity);
-
-            if let Some(cached) = self.cache.get(&export.endpoint_id)
-                && cached.identity == identity
-                && if cached.observation.name.is_some() {
-                    now.saturating_sub(cached.observed_at) < NAME_REFRESH_INTERVAL
-                } else {
-                    now < cached.retry_at
-                }
-            {
-                output.insert(export.endpoint_id, cached.observation.clone());
-                continue;
-            }
-
-            pending.push((
-                export.endpoint_id,
-                identity,
-                StableEndpointId::from_virtual_endpoint_id(export.endpoint_id),
-                export.intent,
-            ));
-        }
-
+        let eligible = NameKey::eligible(exports);
+        self.retain(&eligible);
+        let pending = self.due(&eligible, now);
         if !pending.is_empty() {
-            let requests: Vec<_> = pending
-                .iter()
-                .map(|(id, _, stable_id, intent)| (*id, *stable_id, *intent))
-                .collect();
-            let results = reader.read(&requests);
-            let observed_at = clock.now();
-            for (index, (endpoint_id, identity, _, _)) in pending.into_iter().enumerate() {
-                let result = results
-                    .get(index)
-                    .cloned()
-                    .unwrap_or_else(|| Err("endpoint reader returned too few results".into()));
-                let observation = match result {
-                    Ok((mmdevice_id, name)) => VadEndpointNameObservation {
-                        endpoint_id,
-                        native_identity: identity,
-                        observed_qpc_100ns: clock.qpc_100ns(),
-                        mmdevice_id: Some(mmdevice_id),
-                        name: Some(name),
-                        error: None,
-                    },
-                    Err(error) => VadEndpointNameObservation {
-                        endpoint_id,
-                        native_identity: identity,
-                        observed_qpc_100ns: clock.qpc_100ns(),
-                        mmdevice_id: None,
-                        name: None,
-                        error: Some(error),
-                    },
-                };
-                self.cache.insert(
-                    endpoint_id,
-                    CacheEntry {
-                        identity,
-                        observation: observation.clone(),
-                        observed_at,
-                        retry_at: observed_at + NEGATIVE_RETRY_INTERVAL,
-                    },
-                );
-                output.insert(endpoint_id, observation);
-            }
+            self.complete(read_names(pending, reader, clock));
         }
+        self.observations(&eligible, now)
+    }
 
+    fn retain(&mut self, keys: &[NameKey]) {
         self.cache
-            .retain(|endpoint_id, entry| eligible.get(endpoint_id) == Some(&entry.identity));
-        exports
-            .iter()
-            .take(MAX_ENDPOINTS as usize)
-            .filter_map(|export| output.remove(&export.endpoint_id))
+            .retain(|_, entry| keys.iter().any(|key| entry.matches(key)));
+    }
+
+    fn due(&self, keys: &[NameKey], now: Duration) -> Vec<NameKey> {
+        keys.iter()
+            .copied()
+            .filter(|key| {
+                !self
+                    .cache
+                    .get(&key.endpoint_id)
+                    .is_some_and(|entry| entry.matches(key) && entry.current(now))
+            })
             .collect()
     }
+
+    fn complete(&mut self, entries: Vec<CacheEntry>) {
+        self.cache.extend(
+            entries
+                .into_iter()
+                .map(|entry| (entry.observation.endpoint_id, entry)),
+        );
+    }
+
+    fn observations(&self, keys: &[NameKey], now: Duration) -> Vec<VadEndpointNameObservation> {
+        let mut seen = std::collections::BTreeSet::new();
+        keys.iter()
+            .filter_map(|key| {
+                self.cache
+                    .get(&key.endpoint_id)
+                    .filter(|entry| entry.matches(key) && entry.current(now))
+                    .filter(|_| seen.insert(key.endpoint_id))
+                    .map(|entry| entry.observation.clone())
+            })
+            .collect()
+    }
+}
+
+fn read_names(
+    pending: Vec<NameKey>,
+    reader: &mut impl EndpointNameReader,
+    clock: &mut impl ObserverClock,
+) -> Vec<CacheEntry> {
+    let started = clock.now();
+    let requests: Vec<_> = pending
+        .iter()
+        .map(|key| (key.endpoint_id, key.stable_id, key.intent))
+        .collect();
+    log::trace!(
+        target: "moiren::audio::vad::name",
+        "event=endpoint_names_read_start requests={}",
+        requests.len(),
+    );
+    let mut results = reader.read(&requests).into_iter();
+    let observed_at = clock.now();
+    log::trace!(
+        target: "moiren::audio::vad::name",
+        "event=endpoint_names_read requests={} elapsed_us={}",
+        requests.len(),
+        observed_at.saturating_sub(started).as_micros(),
+    );
+    pending
+        .into_iter()
+        .map(|key| {
+            let mut observation = VadEndpointNameObservation {
+                endpoint_id: key.endpoint_id,
+                native_identity: key.identity,
+                observed_qpc_100ns: clock.qpc_100ns(),
+                mmdevice_id: None,
+                name: None,
+                device_state: None,
+                device_state_error: None,
+                error: None,
+            };
+            match results
+                .next()
+                .unwrap_or_else(|| Err("endpoint reader returned too few results".into()))
+            {
+                Ok(read) => {
+                    observation.mmdevice_id = Some(read.mmdevice_id);
+                    observation.name = Some(read.name);
+                    observation.device_state = read.device_state;
+                    observation.device_state_error = read.device_state_error;
+                }
+                Err(error) => observation.error = Some(error),
+            }
+            CacheEntry {
+                observation,
+                observed_at,
+            }
+        })
+        .collect()
+}
+
+mod background;
+#[cfg(windows)]
+pub(super) use background::{NAME_READ_IN_FLIGHT, NameRefresh};
+
+#[derive(Clone)]
+pub(super) struct EndpointNameRead {
+    mmdevice_id: String,
+    name: String,
+    device_state: Option<u32>,
+    device_state_error: Option<String>,
 }
 
 pub(super) trait EndpointNameReader {
     fn read(
         &mut self,
         requests: &[(VirtualEndpointId, super::StableEndpointId, super::Intent)],
-    ) -> Vec<Result<(String, String), String>>;
+    ) -> Vec<Result<EndpointNameRead, String>>;
 }
 
 pub(super) trait ObserverClock {
-    fn now(&mut self) -> Duration;
+    fn now(&self) -> Duration;
     fn qpc_100ns(&mut self) -> Option<u64>;
 }
 
@@ -178,28 +252,18 @@ struct Candidate {
     intent: super::Intent,
 }
 
-/// Outcome of deciding whether a failed enumeration candidate belongs to the
-/// owned VAD device. `Undecidable` means the optional identity lookup itself
-/// failed; such an endpoint stays unattributed and never fails the name read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CandidateOwnership {
-    Owned,
-    NotOwned,
-    Undecidable,
-}
-
-/// Join the errors of enumeration candidates that are confirmed owned. The
-/// exact-identity `select` below remains the only source of a successful name;
-/// an undecidable hint must not turn into a false observation error about the
-/// attribution machinery itself.
-pub(super) fn owned_candidate_errors(
-    candidates: &[(u32, String, CandidateOwnership)],
+/// A failed candidate can be attributed using an adapter instance already
+/// read during the scan. An unknown instance cannot fail another name lookup.
+fn owned_candidate_errors<'a>(
+    candidates: impl Iterator<Item = (u32, &'a str, Option<&'a str>)>,
+    stable_id: StableEndpointId,
     reported_limit: usize,
 ) -> Vec<String> {
+    let stable = stable_id.to_string();
     let mut reports = Vec::new();
     let mut omitted = 0;
-    for (index, error, ownership) in candidates.iter() {
-        if *ownership != CandidateOwnership::Owned {
+    for (index, error, raw_instance) in candidates {
+        if !raw_instance.is_some_and(|instance| raw_instance_has_identity(instance, &stable)) {
             continue;
         }
         if reports.len() < reported_limit {
@@ -222,21 +286,30 @@ fn select<'a>(
     intent: super::Intent,
     root: &str,
 ) -> Result<&'a Candidate, String> {
-    let stable_text = stable_id.to_string();
-    let mut matches = candidates.iter().filter(|candidate| {
-        let Some((hardware_id, instance)) = candidate.raw_instance.rsplit_once('\\') else {
-            return false;
-        };
-        hardware_id.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
-            && instance
-                .rsplit('&')
-                .next()
-                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&stable_text))
-            && candidate.root_instance.eq_ignore_ascii_case(root)
-            && candidate.intent == intent
+    let stable = stable_id.to_string();
+    let stable_matches: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| raw_instance_has_identity(&candidate.raw_instance, &stable))
+        .collect();
+    let mut matches = stable_matches.iter().copied().filter(|candidate| {
+        candidate.root_instance.eq_ignore_ascii_case(root) && candidate.intent == intent
     });
     let Some(first) = matches.next() else {
-        return Err("no exact Windows endpoint matches the owned VAD identity".into());
+        let candidates = stable_matches
+            .iter()
+            .take(8)
+            .map(|candidate| {
+                format!(
+                    "flow={:?}, root={:?}, pnp={:?}",
+                    candidate.intent, candidate.root_instance, candidate.raw_instance
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let omitted = stable_matches.len().saturating_sub(8);
+        return Err(format!(
+            "no exact Windows endpoint matches the owned VAD identity (requested flow={intent:?}, root={root:?}, stable_id={stable_id}; stable-ID candidates=[{candidates}], omitted={omitted})"
+        ));
     };
     if matches.next().is_some() {
         return Err("multiple MMDevices map to the owned raw endpoint".into());
@@ -244,10 +317,29 @@ fn select<'a>(
     Ok(first)
 }
 
+fn raw_instance_has_identity(raw_instance: &str, stable_id: &str) -> bool {
+    let Some((hardware_id, instance)) = raw_instance.rsplit_once('\\') else {
+        return false;
+    };
+    hardware_id.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
+        && instance
+            .rsplit('&')
+            .next()
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(stable_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::vad::{Channels, EndpointSnapshot, Intent, PdoState, StableEndpointId, StreamState};
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc::{Receiver, Sender, channel},
+        },
+        thread,
+        time::Instant,
+    };
 
     const ROOT: &str = r"ROOT\MOIRENVAD\0001";
 
@@ -367,47 +459,47 @@ mod tests {
     }
 
     #[test]
-    fn undecidable_ownership_hints_are_not_reported_as_observation_errors() {
-        // Regression: a failing optional identity lookup (for example
-        // GetDevice(error attribution) 0xE0000225 on a removing endpoint) used
-        // to abort the whole name read; it must stay unattributed instead.
-        let hints = vec![
+    fn failures_without_an_owned_adapter_instance_stay_unattributed() {
+        let stable = StableEndpointId::from_virtual_endpoint_id(id(0x42));
+        let unrelated = format!(r"OTHER\VAD_RAW\6&opaque&{stable}");
+        let different = candidate(
+            StableEndpointId::from_virtual_endpoint_id(id(0x43)),
+            ROOT,
+            Intent::Playback,
+            "other endpoint",
+        );
+        let failures = [
+            (0, "adapter property failed", None),
+            (1, "devnode lookup failed", Some(unrelated.as_str())),
             (
-                0,
-                "topology walk failed".into(),
-                super::CandidateOwnership::Undecidable,
-            ),
-            (
-                1,
-                "adapter GetDevice failed".into(),
-                super::CandidateOwnership::NotOwned,
+                2,
+                "devnode lookup failed",
+                Some(different.raw_instance.as_str()),
             ),
         ];
         assert_eq!(
-            super::owned_candidate_errors(&hints, super::MAX_REPORTED_OWNED_ERRORS),
+            owned_candidate_errors(failures.into_iter(), stable, MAX_REPORTED_OWNED_ERRORS),
             Vec::<String>::new()
         );
     }
 
     #[test]
     fn confirmed_owned_candidate_errors_are_attributed_with_index_and_limit() {
-        let hints = vec![
+        let stable = StableEndpointId::from_virtual_endpoint_id(id(0x42));
+        let owned = candidate(stable, ROOT, Intent::Playback, "owned");
+        let failures = [
             (
                 0,
-                "connector count is 3, expected 1".into(),
-                super::CandidateOwnership::Owned,
+                "devnode lookup failed",
+                Some(owned.raw_instance.as_str()),
             ),
-            (1, "unrelated".into(), super::CandidateOwnership::NotOwned),
-            (
-                2,
-                "adapter property missing".into(),
-                super::CandidateOwnership::Owned,
-            ),
+            (1, "topology unavailable", None),
+            (2, "root lookup failed", Some(owned.raw_instance.as_str())),
         ];
         assert_eq!(
-            super::owned_candidate_errors(&hints, 1),
+            owned_candidate_errors(failures.into_iter(), stable, 1),
             vec![
-                "MMDevice index 0: connector count is 3, expected 1".to_owned(),
+                "MMDevice index 0: devnode lookup failed".to_owned(),
                 "1 additional owned endpoint topology errors omitted".to_owned(),
             ]
         );
@@ -463,7 +555,7 @@ mod tests {
 
     struct FakeReader {
         calls: usize,
-        result: Result<(String, String), String>,
+        result: Result<EndpointNameRead, String>,
     }
 
     impl Default for FakeReader {
@@ -479,7 +571,7 @@ mod tests {
         fn read(
             &mut self,
             requests: &[(VirtualEndpointId, StableEndpointId, Intent)],
-        ) -> Vec<Result<(String, String), String>> {
+        ) -> Vec<Result<EndpointNameRead, String>> {
             self.calls += 1;
             requests.iter().map(|_| self.result.clone()).collect()
         }
@@ -491,7 +583,7 @@ mod tests {
     }
 
     impl ObserverClock for FakeClock {
-        fn now(&mut self) -> Duration {
+        fn now(&self) -> Duration {
             self.now
         }
 
@@ -503,6 +595,264 @@ mod tests {
 
     fn fresh_export(endpoint_id: VirtualEndpointId) -> VadEndpointNameTarget {
         export(endpoint_id, PdoState::Present, false, None)
+    }
+
+    fn name_read(device_state: Option<u32>, device_state_error: Option<&str>) -> EndpointNameRead {
+        EndpointNameRead {
+            mmdevice_id: "opaque device ID".into(),
+            name: "Exact raw name".into(),
+            device_state,
+            device_state_error: device_state_error.map(str::to_owned),
+        }
+    }
+
+    struct BlockingReader {
+        entered: Sender<()>,
+        resume: Receiver<()>,
+    }
+
+    impl EndpointNameReader for BlockingReader {
+        fn read(
+            &mut self,
+            requests: &[(VirtualEndpointId, StableEndpointId, Intent)],
+        ) -> Vec<Result<EndpointNameRead, String>> {
+            self.entered.send(()).unwrap();
+            self.resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            requests
+                .iter()
+                .map(|_| Ok(name_read(Some(1), None)))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_blocked_name_read_never_blocks_poll_or_provider_drop() {
+        static SLOT: AtomicBool = AtomicBool::new(false);
+        let mut refresh = background::NameRefresh::default();
+        let target = fresh_export(id(0x42));
+        let (entered, started) = channel();
+        let (release, resume) = channel();
+        assert!(
+            refresh
+                .poll(std::slice::from_ref(&target), Duration::ZERO, &SLOT, || {
+                    (
+                        BlockingReader { entered, resume },
+                        FakeClock {
+                            now: Duration::ZERO,
+                            qpc: 0,
+                        },
+                    )
+                })
+                .is_empty()
+        );
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            refresh
+                .poll::<FakeReader, FakeClock>(
+                    std::slice::from_ref(&target),
+                    Duration::from_secs(2),
+                    &SLOT,
+                    || panic!("a blocked refresh must not queue another read"),
+                )
+                .is_empty()
+        );
+        drop(refresh);
+        assert!(SLOT.load(Ordering::Acquire));
+        assert!(
+            background::NameRefresh::default()
+                .poll::<FakeReader, FakeClock>(&[target], Duration::ZERO, &SLOT, || {
+                    panic!("a replaced provider must not duplicate a blocked read")
+                })
+                .is_empty()
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while SLOT.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "reader did not return its slot");
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn background_completion_for_a_replaced_pdo_is_discarded() {
+        static SLOT: AtomicBool = AtomicBool::new(false);
+        let mut refresh = background::NameRefresh::default();
+        let endpoint = id(0x42);
+        let (entered, started) = channel();
+        let (release, resume) = channel();
+        let now = Duration::from_millis(1);
+        assert!(
+            refresh
+                .poll(&[fresh_export(endpoint)], now, &SLOT, || {
+                    (
+                        BlockingReader { entered, resume },
+                        FakeClock { now, qpc: 0 },
+                    )
+                })
+                .is_empty()
+        );
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut replacement = fresh_export(endpoint);
+        replacement.snapshot = Some(snapshot_with_identity(endpoint, PdoState::Present, 201, 7));
+        release.send(()).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let names = refresh.poll(std::slice::from_ref(&replacement), now, &SLOT, || {
+                (
+                    FakeReader {
+                        calls: 0,
+                        result: Ok(name_read(Some(2), None)),
+                    },
+                    FakeClock { now, qpc: 0 },
+                )
+            });
+            if let Some(name) = names.first() {
+                assert_eq!(name.native_identity[0], 201);
+                assert_eq!(name.device_state, Some(2));
+                break;
+            }
+            assert!(Instant::now() < deadline, "replacement read did not settle");
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn observer_preserves_all_raw_device_state_flags_without_admission_inference() {
+        for state in [1, 2, 4, 8, 0, 0x8000_0002, u32::MAX] {
+            let endpoint_id = id(0x42);
+            let mut observer = NameObserver::default();
+            let mut reader = FakeReader {
+                calls: 0,
+                result: Ok(name_read(Some(state), None)),
+            };
+            let mut clock = FakeClock {
+                now: Duration::ZERO,
+                qpc: 500,
+            };
+            let observed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+            assert_eq!(observed[0].device_state, Some(state));
+            assert_eq!(observed[0].name.as_deref(), Some("Exact raw name"));
+            assert_eq!(observed[0].mmdevice_id.as_deref(), Some("opaque device ID"));
+            assert!(observed[0].device_state_error.is_none());
+            assert!(observed[0].error.is_none());
+        }
+    }
+
+    #[test]
+    fn state_read_failure_preserves_raw_name_and_separate_error() {
+        let endpoint_id = id(0x42);
+        let mut observer = NameObserver::default();
+        let error = "IMMDevice::GetState(exact endpoint): HRESULT 0x80004005";
+        let mut reader = FakeReader {
+            calls: 0,
+            result: Ok(name_read(None, Some(error))),
+        };
+        let mut clock = FakeClock {
+            now: Duration::ZERO,
+            qpc: 500,
+        };
+        let observed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(observed[0].name.as_deref(), Some("Exact raw name"));
+        assert_eq!(observed[0].mmdevice_id.as_deref(), Some("opaque device ID"));
+        assert!(observed[0].error.is_none());
+        assert_eq!(observed[0].device_state, None);
+        assert_eq!(observed[0].device_state_error.as_deref(), Some(error));
+    }
+
+    #[test]
+    fn missing_state_never_synthesizes_active_from_a_successful_name() {
+        let endpoint_id = id(0x42);
+        let mut observer = NameObserver::default();
+        let mut reader = FakeReader {
+            calls: 0,
+            result: Ok(name_read(None, None)),
+        };
+        let mut clock = FakeClock {
+            now: Duration::ZERO,
+            qpc: 500,
+        };
+        let observed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert!(observed[0].name.is_some());
+        assert!(observed[0].device_state.is_none());
+        assert!(observed[0].device_state_error.is_none());
+        assert!(observed[0].error.is_none());
+    }
+
+    #[test]
+    fn cached_state_and_error_refresh_with_name_without_per_poll_reads() {
+        let endpoint_id = id(0x42);
+        let mut observer = NameObserver::default();
+        let mut reader = FakeReader {
+            calls: 0,
+            result: Ok(name_read(Some(2), None)),
+        };
+        let mut clock = FakeClock {
+            now: Duration::ZERO,
+            qpc: 500,
+        };
+        let first = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(first[0].device_state, Some(2));
+        reader.result = Ok(name_read(Some(1), None));
+        clock.now = Duration::from_millis(999);
+        let cached = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(cached, first);
+        assert_eq!(reader.calls, 1);
+
+        clock.now = Duration::from_secs(1);
+        let refreshed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(refreshed[0].device_state, Some(1));
+        assert!(refreshed[0].device_state_error.is_none());
+        assert_ne!(refreshed[0].observed_qpc_100ns, first[0].observed_qpc_100ns);
+        assert_eq!(reader.calls, 2);
+
+        reader.result = Ok(name_read(None, Some("state unavailable")));
+        clock.now = Duration::from_secs(2);
+        let failed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(failed[0].device_state, None);
+        assert_eq!(
+            failed[0].device_state_error.as_deref(),
+            Some("state unavailable")
+        );
+        assert!(failed[0].name.is_some() && failed[0].error.is_none());
+        clock.now += Duration::from_millis(999);
+        assert_eq!(
+            observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock),
+            failed
+        );
+        assert_eq!(reader.calls, 3);
+
+        reader.result = Ok(name_read(Some(8), None));
+        clock.now = Duration::from_secs(3);
+        let recovered = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        assert_eq!(recovered[0].device_state, Some(8));
+        assert!(recovered[0].device_state_error.is_none());
+        assert_eq!(reader.calls, 4);
+    }
+
+    #[test]
+    fn name_or_identity_read_failure_does_not_retain_a_previously_active_state() {
+        for error in ["exact identity missing", "raw name read failed"] {
+            let endpoint_id = id(0x42);
+            let mut observer = NameObserver::default();
+            let mut reader = FakeReader {
+                calls: 0,
+                result: Ok(name_read(Some(1), None)),
+            };
+            let mut clock = FakeClock {
+                now: Duration::ZERO,
+                qpc: 500,
+            };
+            observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+            reader.result = Err(error.into());
+            clock.now = Duration::from_secs(1);
+            let failed = observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+            assert!(failed[0].mmdevice_id.is_none());
+            assert!(failed[0].name.is_none());
+            assert!(failed[0].device_state.is_none());
+            assert!(failed[0].device_state_error.is_none());
+            assert_eq!(failed[0].error.as_deref(), Some(error));
+        }
     }
 
     #[test]
@@ -551,7 +901,7 @@ mod tests {
         let mut observer = NameObserver::default();
         let mut reader = FakeReader {
             calls: 0,
-            result: Ok(("opaque device ID".into(), "Exact raw name".into())),
+            result: Ok(name_read(None, None)),
         };
         let mut clock = FakeClock {
             now: Duration::ZERO,
@@ -572,13 +922,14 @@ mod tests {
         let mut observer = NameObserver::default();
         let mut reader = FakeReader {
             calls: 0,
-            result: Ok(("opaque device ID".into(), "Exact raw name".into())),
+            result: Ok(name_read(Some(1), None)),
         };
         let mut clock = FakeClock {
             now: Duration::ZERO,
             qpc: 500,
         };
         observer.observe(&[fresh_export(endpoint_id)], &mut reader, &mut clock);
+        reader.result = Ok(name_read(Some(2), None));
         let mut replacement = fresh_export(endpoint_id);
         // Changing the runtime token models a new PDO/session identity while
         // preserving the stable endpoint ID and the exact same configured spec.
@@ -592,6 +943,8 @@ mod tests {
         let result = observer.observe(&[replacement], &mut reader, &mut clock);
         assert_eq!(reader.calls, 2);
         assert_eq!(result[0].native_identity[0], 201);
+        assert_eq!(result[0].device_state, Some(2));
+        assert!(result[0].device_state_error.is_none());
     }
 
     #[test]
@@ -626,7 +979,7 @@ mod tests {
         let mut observer = NameObserver::default();
         let mut reader = FakeReader {
             calls: 0,
-            result: Ok(("opaque device ID".into(), "Exact raw name".into())),
+            result: Ok(name_read(None, None)),
         };
         let mut clock = FakeClock {
             now: Duration::ZERO,
@@ -671,7 +1024,7 @@ mod tests {
         let mut observer = NameObserver::default();
         let mut reader = FakeReader {
             calls: 0,
-            result: Ok(("opaque device ID".into(), "Exact raw name".into())),
+            result: Ok(name_read(None, None)),
         };
         let mut clock = FakeClock {
             now: Duration::ZERO,

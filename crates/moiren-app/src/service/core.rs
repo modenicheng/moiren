@@ -20,7 +20,15 @@ enum DesiredIntent {
     Session(SessionSpec),
     // Graph resource bindings are typed in EngineProject, not physical IDs in
     // the legacy two-endpoint summary. Keep lifecycle intent independently.
-    Graph,
+    Graph { limit: RunLimit },
+}
+impl DesiredIntent {
+    fn limit(&self) -> RunLimit {
+        match self {
+            Self::Session(spec) => spec.limit,
+            Self::Graph { limit } => *limit,
+        }
+    }
 }
 impl Default for ServiceCore {
     fn default() -> Self {
@@ -84,12 +92,38 @@ impl ServiceCore {
     }
     fn graph_intent(&self, summary: Option<SessionSpec>) -> Result<DesiredIntent, DispatchError> {
         match summary {
-            Some(spec) => {
+            Some(mut spec) => {
                 spec.validate()?;
+                // Graph intent owns the effective limit when no legacy summary
+                // exists; preserve it across derived physical-only restarts.
+                if let Some(DesiredIntent::Graph { limit }) = self.desired.as_ref() {
+                    spec.limit = *limit;
+                }
                 Ok(DesiredIntent::Session(spec))
             }
-            None => Ok(DesiredIntent::Graph),
+            None => Ok(DesiredIntent::Graph {
+                limit: self.run_limit().unwrap_or(RunLimit::UntilStopped),
+            }),
         }
+    }
+    /// Test-only session teardown. Production remains exit-driven: the desktop
+    /// service is always-on and never exposes a transient stop request.
+    pub(crate) fn stop(&mut self) -> Result<SessionGeneration, DispatchError> {
+        self.check_open()?;
+        self.advance()?;
+        self.desired = None;
+        self.error = None;
+        self.phase = if self.owner.is_some() {
+            SessionPhase::Stopping
+        } else {
+            SessionPhase::Idle
+        };
+        // The generation and intent both changed, even when no owner existed.
+        self.bump();
+        Ok(self.generation)
+    }
+    pub(crate) fn run_limit(&self) -> Option<RunLimit> {
+        self.desired.as_ref().map(DesiredIntent::limit)
     }
     /// A managed host can wait for resources and later recover without a new
     /// user request. Keep its intent/identity while projecting actual execution.
@@ -320,6 +354,7 @@ mod tests {
             output_endpoint_id: "physical-output".into(),
             gain: 1.0,
             pan: 0.0,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         })
         .unwrap();
@@ -336,6 +371,30 @@ mod tests {
         assert!(c.finish_exit());
     }
     #[test]
+    fn graph_intent_preserves_explicit_run_limit_until_test_stop() {
+        let mut c = ServiceCore::default();
+        c.start(SessionSpec {
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+            output_endpoint_id: "physical-output".into(),
+            gain: 1.0,
+            pan: 0.0,
+            limit: RunLimit::Seconds(12),
+            max_block_frames: 256,
+        })
+        .unwrap();
+        c.managed_graph_desired(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
+        c.restart_managed_graph(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
+
+        c.stop().unwrap();
+        assert_eq!(c.phase(), SessionPhase::Idle);
+        c.managed_graph_desired(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::UntilStopped));
+    }
+    #[test]
     fn exit_revokes_permits_even_when_generation_is_exhausted() {
         let mut c = ServiceCore {
             generation: SessionGeneration(u64::MAX),
@@ -349,6 +408,7 @@ mod tests {
                 output_endpoint_id: "physical-output".into(),
                 gain: 1.0,
                 pan: 0.0,
+                limit: RunLimit::UntilStopped,
                 max_block_frames: 256,
             }),
             Err(DispatchError::GenerationExhausted)

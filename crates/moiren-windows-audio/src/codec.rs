@@ -73,6 +73,16 @@ impl SampleCodec {
         self.channels * self.container_bytes
     }
 
+    #[cfg(windows)]
+    pub(crate) fn encoded_layout(self) -> (SampleFormat, usize, u16, u16) {
+        (
+            self.format,
+            self.channels,
+            (self.container_bytes * 8) as u16,
+            self.valid_bits,
+        )
+    }
+
     pub fn decode(self, input: &[u8], output: &mut [StereoFrame]) -> Result<usize, CodecError> {
         if !input.len().is_multiple_of(self.frame_bytes()) {
             return Err(CodecError::PartialFrame);

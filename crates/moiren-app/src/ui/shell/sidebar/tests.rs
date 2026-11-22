@@ -25,6 +25,153 @@ fn inspector_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) ->
     })
 }
 
+#[gpui_kit::test]
+fn device_override_cache_repaints_local_draft_error_and_discard_without_a_publish(
+    cx: &mut TestAppContext,
+) {
+    use crate::ui::pages::{
+        Page,
+        devices::DeviceTab,
+        settings::{Direction, Editor},
+    };
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1600.), gpui_kit::px(1200.)));
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = DeviceTab::Outputs;
+            let _ = window;
+            shell.inspect_device("output-a".into(), cx);
+        });
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // Mount the newly selected device inspector before adding its override.
+    // InputState construction is owned by the cached panel render.
+    cached_frame(cx);
+    let before = inspector_rebuilds(&view, cx);
+    settle_spring(cx);
+    let _ = before;
+    let snapshot = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.clone());
+    view.update(cx, |shell, cx| {
+        crate::ui::pages::settings::device_stream_mut(
+            &mut shell.settings.editor.device.audio,
+            Direction::Output,
+            "output-a",
+        );
+        shell.settings.editor.device.changed();
+        cx.notify();
+    });
+    cached_frame(cx);
+    view.update(cx, |shell, cx| {
+        shell.settings.editor.device.changed();
+        cx.notify();
+    });
+    cached_frame(cx);
+    cx.update(|window, cx| window.render_frame(cx));
+    assert!(
+        cx.update(|window, _| window.try_find("device-output-period-input").is_some()),
+        "a local override must repaint the cached inspector before any service publish"
+    );
+    let old = view.read_with(cx, |shell, _| {
+        shell
+            .settings
+            .editor
+            .device_period_inputs()
+            .next()
+            .cloned()
+            .expect("the rendered override must own a period input")
+    });
+    cx.update(|window, cx| {
+        old.update(cx, |input, cx| {
+            input.set_value("invalid", window, cx);
+            cx.emit(crate::ui::shell::component::input::InputEvent::Change);
+        });
+    });
+    view.update(cx, |shell, cx| {
+        let text = shell
+            .settings
+            .editor
+            .device_period_inputs()
+            .next()
+            .map(|input| input.read(cx).value());
+        assert_eq!(text.as_deref(), Some("invalid"));
+        assert!(shell.settings.editor.device.feedback.is_some());
+    });
+    cached_frame(cx);
+    assert!(
+        cx.update(|window, _| window
+            .find("device-settings-feedback")
+            .label()
+            .is_some_and(|label| label.contains("integer")),),
+        "invalid local input must repaint the refusal without an external refresh"
+    );
+    view.update(cx, |shell, cx| {
+        shell.settings.editor.device = shell.current_settings_draft(cx);
+        cx.notify();
+    });
+    cached_frame(cx);
+    assert!(cx.update(|window, _| window.try_find("device-output-period-input").is_none()));
+    view.read_with(cx, |shell, cx| {
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot,
+            &shell.state.read(cx).snapshot
+        ));
+        assert!(!shell.settings.editor.draft(Editor::Device).dirty());
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn device_period_nested_notifications_repaint_caret_without_a_publish(cx: &mut TestAppContext) {
+    use crate::ui::pages::{Page, devices::DeviceTab, settings::Direction};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(gpui_kit::px(1600.), gpui_kit::px(1200.)));
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell.set_page(Page::Devices, cx);
+            shell.devices.device_tab = DeviceTab::Outputs;
+            let _ = window;
+            shell.inspect_device("output-a".into(), cx);
+            crate::ui::pages::settings::device_stream_mut(
+                &mut shell.settings.editor.device.audio,
+                Direction::Output,
+                "output-a",
+            );
+            cx.notify();
+        });
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    settle_spring(cx);
+    cached_frame(cx);
+    let before = inspector_rebuilds(&view, cx);
+    burn_in(&view, |cx| inspector_rebuilds(&view, cx), cx);
+    let (snapshot, input) = view.read_with(cx, |shell, cx| {
+        (
+            shell.state.read(cx).snapshot.clone(),
+            shell
+                .settings
+                .editor
+                .device_period_inputs()
+                .next()
+                .unwrap()
+                .clone(),
+        )
+    });
+    input.update(cx, |_, cx| cx.notify());
+    cached_frame(cx);
+    assert!(
+        inspector_rebuilds(&view, cx) > before,
+        "caret/focus-only input notifications must repaint the cached inspector"
+    );
+    view.read_with(cx, |shell, cx| {
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot,
+            &shell.state.read(cx).snapshot
+        ))
+    });
+    finish_service(runtime);
+}
+
 fn library_rebuilds(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> usize {
     view.read_with(cx, |shell, cx| shell.library.panel.read(cx).rebuild_count())
 }

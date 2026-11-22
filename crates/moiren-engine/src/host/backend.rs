@@ -116,6 +116,8 @@ pub struct PrepareRequest<'a> {
     pub mode: PrepareMode,
     pub reuse: &'a [(NodeId, ProcessorId)],
     pub graph_revision: u64,
+    /// Candidate plan identity used by compilation, distinct from graph intent.
+    pub plan_revision: u64,
     pub owner_generation: u64,
     pub resource_generation: u64,
     pub signal_host: &'a moiren_signal::HostControl,

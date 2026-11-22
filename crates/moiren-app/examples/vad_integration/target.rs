@@ -2,12 +2,15 @@
 use super::{
     material, native,
     options::Options,
-    progress, project,
+    progress, project, publication,
     report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, ProbeTrail, Report},
     soak, validation,
 };
 use anyhow::{Context, bail, ensure};
-use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
+use moiren_app::{
+    project::StartupDocuments,
+    service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase},
+};
 use moiren_core::graph::NodeKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
@@ -35,7 +38,15 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let directory = output_directory(options.output_dir.clone())?;
     let soaking = options.soaking();
     eprintln!("integration evidence directory: {}", directory.display());
-    let shared = Arc::new(Mutex::new(Progress::default()));
+    let initial_report = Report {
+        rename_fixture_seed: options.rename_fixture_seed,
+        fixture_source: options.fresh_fixture.then_some("app_create_export"),
+        ..Default::default()
+    };
+    let shared = Arc::new(Mutex::new(Progress {
+        report: initial_report.clone(),
+        ..Default::default()
+    }));
     let worker_shared = shared.clone();
     let worker_directory = directory.clone();
     let (tx, rx) = mpsc::sync_channel(1);
@@ -47,7 +58,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let mut progress_sequence = 0;
     persist_progress(
         &directory,
-        &Report::default(),
+        &initial_report,
         progress_sequence,
         started,
         false,
@@ -114,7 +125,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
             };
             report.elapsed_ms = started.elapsed().as_millis();
             report.error = Some(format!(
-                "coordinator {error}; graceful cleanup not confirmed"
+                "coordinator {error:#}; graceful cleanup not confirmed"
             ));
             if let Err(error) = emit_report(&directory, &report) {
                 eprintln!("could not persist timeout report: {error:#}");
@@ -151,8 +162,46 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 }
 
 fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -> Report {
-    let mut report = Report::default();
+    let mut report = Report {
+        rename_fixture_seed: options.rename_fixture_seed,
+        fixture_source: options.fresh_fixture.then_some("app_create_export"),
+        ..Default::default()
+    };
     let pcm = options.pcm;
+    if options.rename_streaming {
+        report.stage = "real_service_native_streaming_rename";
+        report.limitations = vec![
+            "One streaming rename per direction; exact-owned exclusive 48kHz stereo Float32 Pair Start and strict known PCM before/after.",
+            "Separate result from historical --rename; no legacy strict held Case is run or relaxed by this mode.",
+            "Old transport interruption/invalidation is retained separately, not continuous waveform or zero-interruption qualification.",
+            "Exact raw Windows FriendlyName, direct old Removed, fresh native generation, stable project binding and Engine confirmation are mandatory; diagnostic_completed alone is not a pass.",
+            "Read-only name owners activate no IAudioClient and drop before Apply; fresh exclusive Pair is initialized only after Engine confirmation.",
+            "Apply/Stop/removal races, repeated renames, independent siblings/leakage and observed Windows default roles are unexercised.",
+            "No first-packet qualification, physical latency, sustained qualification, driver installation, host UI or user application coverage.",
+            "Overall watchdog bounds native/control waits; timeout does not prove graceful owner cleanup or final PDO disappearance.",
+        ];
+    }
+    if options.rename {
+        report.stage = "real_service_native_rename";
+        report.limitations = vec![
+            "Playback and Microphone are tested sequentially with initialized exclusive 48kHz stereo Float32 WASAPI clients; no Start or PCM quality claim.",
+            "The historical strict held gate expects Removing/rename_pending with old provider identity/name and closed gate; this is NOT a driver held-must-remain contract or a synchronous Rejected response.",
+            "A strict held failure is retained in acceptance_failures and keeps this run failed/unqualified even when bounded release/replacement/native readback diagnostics complete; it does not justify changing driver deletion semantics.",
+            "Windows FriendlyName is read from the actual MMDevice property store; provider actual_name alone cannot pass.",
+            "A failed ACTIVE enumeration retains one read-only ALL-state snapshot in native_enumeration_failure: exact identity/state/name, opaque topology metadata and explicit errors. Up to512 endpoints and one-second scheduling budget inside the existing case deadline; COM calls remain bounded only by the process watchdog. Diagnostic entries never authorize client initialization, exact-name or lifecycle success, and cannot replace the original failure.",
+            "Streaming name lookup failures are recorded in the before or after phase as name_enumeration_failure, with the original failure, an ALL-state snapshot and a fresh ACTIVE recheck sharing one second within the case deadline.",
+            "DeviceDesc and DeviceInterface_FriendlyName are independently read from the actual MMDevice in before/while_held/after. Missing properties, unexpected VARTYPE, HRESULT and decoding errors remain typed diagnostic evidence, never acceptance gates or FriendlyName fallbacks.",
+            "These property observations alone do not establish Windows name composition or cache causality. No parent/SetupAPI registry traversal, property writes, permission changes or additional control owner are added.",
+            "An explicit rename_fixture_seed changes only this probe's persisted baseline fixture IDs/names; IDs are fixed 8-byte direction prefixes plus the 8-byte little-endian seed. Both same-ID renames retain their baseline stable ID. Reusing a seed reproduces IDs; it does not ensure an unused Windows identity.",
+            "The seeded fixture is a diagnostic comparison, not a product workaround or independent cache proof. No random/automatic identity rotation, product rename changes or acceptance relaxation is performed. Original baseline project.moiren is retained alongside the report seed.",
+            "Fresh replacement requires a new PDO token, newer endpoint generation, same control session, fresh service observation and Engine-confirmed open gates.",
+            "Direct old Removed requires the production adapter's retained actual QUERY tombstone: same baseline PDO/session/endpoint, newer observation generation, non-regressing stream/gate epochs; the adapter guarantees Removed with closed gate. Absent or a new token never substitutes.",
+            "The direct Removed checkpoint is recorded before fresh replacement/native init. Missing/invalid retirement evidence remains a separate failure while name diagnostics may continue; diagnostic_completed is not an acceptance pass.",
+            "Native/control calls and teardown share the existing overall process watchdog; a forced exit never confirms graceful cleanup.",
+            "No physical latency, PCM, long-run qualification, driver installation or default-device changes.",
+            "Service Exited plus join proves control-file release, not final PDO absence.",
+        ];
+    }
     if pcm || options.soaking() {
         report.stage = "stage2_real_graph_native_pcm";
         report.limitations = vec![
@@ -160,6 +209,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             "Signal headers prove Engine timeline advances; AppSnapshot.elapsed is wall time only and is not used.",
             "Native identity is root parent plus stable ID plus flow; this probe never opens a ControlClient or PcmOwner.",
             "Public native stamps correlate sampled stream advances with gate transitions; intermediate native states and external client counts are not observable.",
+            "Failed ACTIVE identity selection records the existing enumerator's ALL-state snapshot and a later fresh ACTIVE topology observation within the work deadline. Later matches are diagnostic.",
             "Running-phase re-admission is bounded to 5s and the existing phase deadline; gate epoch alone never permits closure.",
             "Gate transition timestamps are sampled monotonic wall times, not Engine progress. Intentional Stop/exit gate closures are separate checkpoints.",
             "Known PCM and Stop silence are bounded observations, not long stress/Verifier/release qualification.",
@@ -180,125 +230,193 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         }
     }
     let mut runtime = None;
+    let mut expected_owner_generation = None;
+    let mut input_capture = None;
+    if let Some(frames) = options.input_capture_frames {
+        report.input_capture = Some(super::report::InputCaptureExport {
+            requested_frames: frames,
+            raw_file: super::input_capture::RAW_FILE,
+            metadata_file: super::input_capture::JSON_FILE,
+            exported: false,
+            error: Some("not_joined_unknown".into()),
+        });
+    }
     let timeout = Duration::from_secs(options.timeout_seconds);
+    if options.fresh_fixture {
+        report.limitations.push(
+            "Fresh fixtures are established by a separate App service before the saved-project test session.",
+        );
+    }
     // Long soak keeps a fixed cleanup reserve; a ratio would truncate 16h work.
     let work_deadline = started + options.work_budget();
     let overall_deadline = started + timeout;
-    let outcome =
-        (|| -> anyhow::Result<()> {
-            let startup = project::persist(directory)?;
-            report.persisted_project_verified = true;
-            publish(shared, &report);
-            // Load soak material before any driver/service work so a rejected
-            // file fails without touching native audio.
-            let material = match &options.soak_pcm_file {
-                Some(path) => Some(material::load(path).context("music soak material")?),
-                None => None,
-            };
-            let document = startup
-                .project
-                .as_ref()
-                .context("startup did not restore project")?;
-            let ids: [String; 2] = document
+    let outcome = (|| -> anyhow::Result<()> {
+        // Load soak material before any driver/service work so a rejected
+        // file fails without touching native audio.
+        let material = match &options.soak_pcm_file {
+            Some(path) => Some(material::load(path).context("music soak material")?),
+            None => None,
+        };
+        let (startup, fixture_session) = if options.fresh_fixture {
+            let (startup, session) =
+                establish_fixture(directory, work_deadline, &mut runtime, &mut report, shared)?;
+            ensure!(
+                Instant::now() < work_deadline,
+                "fixture persistence exceeded the work deadline"
+            );
+            (startup, Some(session))
+        } else {
+            (
+                project::persist(directory, options.rename_fixture_seed)?,
+                None,
+            )
+        };
+        report.persisted_project_verified = true;
+        publish(shared, &report);
+        let document = startup
+            .project
+            .as_ref()
+            .context("startup did not restore project")?;
+        let ids: [String; 2] = document
+            .exports
+            .iter()
+            .map(|export| export.endpoint_id.to_string())
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
+        let stable_ids: [StableEndpointId; 2] = document
+            .exports
+            .iter()
+            .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
+        // Only the production factory discovers/opens the single control owner.
+        let driver = if let Some(frames) = options.input_capture_frames {
+            let endpoint = document
                 .exports
                 .iter()
-                .map(|export| export.endpoint_id.to_string())
-                .collect::<Vec<_>>()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
-            let stable_ids: [StableEndpointId; 2] = document
-                .exports
-                .iter()
-                .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
-                .collect::<Vec<_>>()
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
-            // Only the production factory discovers/opens the single control owner.
-            let service = ServiceRuntime::spawn_with_startup(ManagedDriver::windows(), startup)?;
-            let handle = service.handle();
-            shared
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .handle = Some(handle.clone());
-            runtime = Some(service);
-            let initial = handle.try_snapshot().context("missing startup snapshot")?;
-            ensure!(
-                initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
-                "restored project started without Apply"
-            );
-            ensure!(
-                initial.exports.iter().all(|export| !export.gate_open),
-                "startup gate was open"
-            );
-            report.checkpoints.push(Checkpoint {
-                stage: "startup_restored_before_apply".into(),
-                evidence: Evidence::from(initial.as_ref()),
-            });
-            publish(shared, &report);
-            let applied = handle
-                .try_request_tracked(AppRequest::ApplyGraph)
-                .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
-            let apply_deadline = if options.soaking() {
-                (Instant::now() + Duration::from_secs(15)).min(work_deadline)
-            } else {
-                work_deadline
-            };
-            let running = wait(
-                &handle,
-                apply_deadline,
-                "apply_no_probe_clients",
-                &mut report,
-                shared,
-                |evidence| evidence.running(&ids, applied.0),
-            )?;
-            ensure!(
-                running.active_revision.is_some(),
-                "missing Engine confirmation"
-            );
-            if pcm || options.soaking() {
-                let session = LiveSession {
-                    handle: &handle,
-                    ids: &ids,
-                    apply_request: applied.0,
-                    revision: running.active_revision.expect("checked"),
-                    deadline: work_deadline,
-                    started,
-                    last_snapshot: RefCell::new(None),
-                };
-                report.gate_transitions = running
-                    .exports
-                    .iter()
-                    .map(|export| {
-                        validation::GateProgress::new(
-                            export.endpoint_id.clone(),
-                            export.native_stamp,
-                            started.elapsed().as_millis(),
-                        )
+                .find(|export| export.direction == moiren_app::service::ExportDirection::Playback)
+                .context("missing Playback/Source export")?
+                .endpoint_id;
+            let (driver, capture) = ManagedDriver::windows_with_input_capture(endpoint, frames)
+                .map_err(|error| anyhow::anyhow!("arm input capture: {error:?}"))?;
+            input_capture = Some(capture);
+            driver
+        } else {
+            ManagedDriver::windows()
+        };
+        let service = ServiceRuntime::spawn_with_startup(driver, startup)?;
+        let handle = retain_service(service, &mut runtime, shared);
+        let initial = handle.try_snapshot().context("missing startup snapshot")?;
+        ensure!(
+            initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
+            "restored project started without Apply"
+        );
+        ensure!(
+            initial.exports.iter().all(|export| !export.gate_open),
+            "startup gate was open"
+        );
+        report.checkpoints.push(Checkpoint {
+            stage: "startup_restored_before_apply".into(),
+            evidence: Evidence::from(initial.as_ref()),
+        });
+        publish(shared, &report);
+        let applied = handle
+            .try_request_tracked(AppRequest::ApplyGraph)
+            .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
+        let apply_deadline = if options.soaking() {
+            (Instant::now() + Duration::from_secs(15)).min(work_deadline)
+        } else {
+            work_deadline
+        };
+        let running = wait(
+            &handle,
+            apply_deadline,
+            "apply_no_probe_clients",
+            &mut report,
+            shared,
+            |evidence| {
+                evidence.running(&ids, applied.0)
+                    && fixture_session.is_none_or(|previous| {
+                        evidence
+                            .fixture_session()
+                            .is_some_and(|current| current != previous)
                     })
-                    .collect::<anyhow::Result<_>>()?;
-                publish(shared, &report);
-                session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
-                if pcm {
-                    session.exercise_pcm(
-                        stable_ids,
-                        options.soak_pcm_seconds,
-                        material.as_ref(),
-                        &mut report,
-                        shared,
-                    )?;
-                    return Ok(());
-                }
-            }
-            // The session is always-on: there is no user stop to verify
-            // gates against. Gate closure checkpoints now belong to exit.
-            ensure!(
-                options.soak_idle_seconds == 0
-                    || report.soak_idle.as_ref().is_some_and(|soak| soak.completed
-                        && soak.elapsed_ms >= options.soak_idle_seconds * 1_000),
-                "requested idle soak incomplete"
+            },
+        )?;
+        ensure!(
+            running.active_revision.is_some(),
+            "missing Engine confirmation"
+        );
+        if options.rename {
+            return super::rename::target::exercise(
+                &handle,
+                &ids,
+                stable_ids,
+                work_deadline,
+                &mut report,
+                |report| publish(shared, report),
             );
-            Ok(())
-        })();
+        }
+        if options.rename_streaming {
+            return super::rename::stream::target::exercise(
+                &handle,
+                &ids,
+                stable_ids,
+                work_deadline,
+                &mut report,
+                |report| publish(shared, report),
+            );
+        }
+        if pcm || options.soaking() {
+            expected_owner_generation = Some(running.generation);
+            let session = LiveSession {
+                handle: &handle,
+                ids: &ids,
+                apply_request: applied.0,
+                revision: running.active_revision.expect("checked"),
+                deadline: work_deadline,
+                started,
+                last_snapshot: RefCell::new(None),
+            };
+            report.gate_transitions = running
+                .exports
+                .iter()
+                .map(|export| {
+                    validation::GateProgress::new(
+                        export.endpoint_id.clone(),
+                        export.native_stamp,
+                        started.elapsed().as_millis(),
+                    )
+                })
+                .collect::<anyhow::Result<_>>()?;
+            publish(shared, &report);
+            session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
+            if pcm {
+                session.exercise_pcm(
+                    stable_ids,
+                    options.soak_pcm_seconds,
+                    material.as_ref(),
+                    &mut report,
+                    shared,
+                )?;
+                return Ok(());
+            }
+        }
+        // The session is always-on: there is no user stop to verify
+        // gates against. Gate closure checkpoints now belong to exit.
+        ensure!(
+            options.soak_idle_seconds == 0
+                || report
+                    .soak_idle
+                    .as_ref()
+                    .is_some_and(|soak| soak.completed
+                        && soak.elapsed_ms >= options.soak_idle_seconds * 1_000),
+            "requested idle soak incomplete"
+        );
+        Ok(())
+    })();
     if let Err(error) = outcome {
         report.error = Some(format!("{error:#}"));
     }
@@ -352,14 +470,35 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                 Ok(()) => {
                     report.service_joined = true;
                     report.control_session_released = true;
-                    cleanup_ok = evidence.exited();
-                    if !cleanup_ok {
-                        report.cleanup_error = Some("service exited, but public lifecycle evidence did not confirm removal requested/closed gates".into());
+                    if expected_owner_generation.is_some() {
+                        report.owner_cleanup = handle
+                            .try_snapshot()
+                            .and_then(|snapshot| snapshot.last_cleanup.as_ref().map(Into::into));
                     }
+                    report.cleanup_error = super::report::exit_cleanup_error(
+                        evidence.exited(),
+                        expected_owner_generation,
+                        report.owner_cleanup.as_ref(),
+                    );
+                    cleanup_ok = report.cleanup_error.is_none();
                 }
                 Err(error) => report.cleanup_error = Some(format!("service join: {error:?}")),
             },
             Err(error) => report.cleanup_error = Some(format!("exit deadline: {error:#}")),
+        }
+    }
+    // A failed outer service join must not erase already joined PCM evidence.
+    // The detached handle enforces the actual worker join itself; an exit
+    // timeout or a still-running worker remains an explicit not_joined error.
+    if let (Some(handle), Some(receipt)) = (input_capture, report.input_capture.as_mut()) {
+        let result = handle
+            .take_after_join()
+            .map_err(anyhow::Error::msg)
+            .and_then(|artifact| super::input_capture::persist(directory, &artifact));
+        receipt.exported = result.is_ok();
+        receipt.error = result.err().map(|error| format!("{error:#}"));
+        if receipt.error.is_some() && report.error.is_none() && report.cleanup_error.is_none() {
+            report.error = Some("input capture export incomplete; see input_capture.error".into());
         }
     }
     if report.error.is_none() && cleanup_ok && report.service_joined {
@@ -368,6 +507,103 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
     report.elapsed_ms = started.elapsed().as_millis();
     publish(shared, &report);
     report
+}
+
+fn establish_fixture(
+    directory: &Path,
+    deadline: Instant,
+    runtime: &mut Option<ServiceRuntime>,
+    report: &mut Report,
+    shared: &Shared,
+) -> anyhow::Result<(StartupDocuments, u64)> {
+    let mut document = project::document()?;
+    ensure!(
+        Instant::now() < deadline,
+        "fixture setup work deadline elapsed"
+    );
+    let service = ServiceRuntime::spawn_with_driver(ManagedDriver::windows())?;
+    let handle = retain_service(service, runtime, shared);
+    let initial = handle
+        .try_snapshot()
+        .context("missing fixture service snapshot")?;
+    ensure!(
+        initial.phase == SessionPhase::Idle
+            && initial.graph.active_revision.is_none()
+            && initial.graph.exports.is_empty(),
+        "fixture service must start with an empty export list"
+    );
+
+    let mut request = initial.consumed_request_id;
+    for export in &document.exports {
+        request = handle
+            .try_request_tracked(AppRequest::CreateExport {
+                direction: export.direction,
+                name: export.name.clone(),
+                channels: export.channels,
+            })
+            .map_err(|error| anyhow::anyhow!("CreateExport enqueue: {error:?}"))?;
+    }
+    let created = wait(
+        &handle,
+        deadline,
+        "fixture_exports_established",
+        report,
+        shared,
+        |evidence| evidence.established_fixture(request.0).is_some(),
+    )?;
+    let ids = created
+        .established_fixture(request.0)
+        .context("missing established fixture IDs")?;
+    let session = created
+        .fixture_session()
+        .context("missing fixture control session")?;
+    // Present is published by the driver after its policy has been prepared.
+    // End this owner before loading saved IDs in a new control session.
+    handle.request_exit();
+    let exited = wait(
+        &handle,
+        deadline,
+        "fixture_service_drained",
+        report,
+        shared,
+        |evidence| evidence.phase == "exited",
+    )?;
+    runtime
+        .take()
+        .expect("retained fixture service")
+        .join()
+        .map_err(|error| anyhow::anyhow!("fixture service join: {error:?}"))?;
+    shared
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .handle = None;
+    ensure!(
+        exited.exited(),
+        "fixture service exit did not confirm closed gates"
+    );
+    ensure!(
+        Instant::now() < deadline,
+        "fixture setup exceeded the work deadline"
+    );
+    record(report, "fixture_service_joined", exited, shared);
+    for (export, id) in document.exports.iter_mut().zip(ids) {
+        export.endpoint_id = id;
+    }
+    Ok((project::persist_document(directory, &document)?, session))
+}
+
+fn retain_service(
+    service: ServiceRuntime,
+    runtime: &mut Option<ServiceRuntime>,
+    shared: &Shared,
+) -> AppHandle {
+    let handle = service.handle();
+    shared
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .handle = Some(handle.clone());
+    *runtime = Some(service);
+    handle
 }
 
 const IDLE_HOLD: Duration = Duration::from_secs(4);
@@ -448,41 +684,42 @@ impl LiveSession<'_> {
         }
         if let Some((_, observed)) = self.last_snapshot.borrow().as_ref() {
             ensure!(
-                observed.elapsed() <= Duration::from_secs(2),
+                observed.elapsed() <= publication::FRESHNESS_LIMIT,
                 "{stage}: service snapshot publication stale"
             );
         }
         if let Some(snapshot) = self.handle.try_snapshot() {
             self.observe_snapshot(&snapshot, report)?;
             let evidence = Evidence::from(snapshot.as_ref());
-            record(report, stage, evidence.clone(), shared);
-            ensure!(
-                evidence.owner_running(self.ids, self.apply_request)
-                    && evidence.active_revision == Some(self.revision),
-                "{stage}: Running/identity/confirmed revision changed: {evidence:?}"
-            );
-            for export in &evidence.exports {
-                let transition = report
-                    .gate_transitions
-                    .iter_mut()
-                    .find(|transition| transition.endpoint_id == export.endpoint_id)
-                    .context("missing initial gate/stamp baseline")?;
-                let observed = transition.observe(
-                    export.native_stamp,
-                    export.gate_open,
-                    now_ms,
-                    phase_deadline
-                        .min(self.deadline)
-                        .saturating_duration_since(self.started)
-                        .as_millis(),
+            let observed = (|| {
+                ensure!(
+                    evidence.owner_running(self.ids, self.apply_request)
+                        && evidence.active_revision == Some(self.revision),
+                    "{stage}: Running/identity/confirmed revision changed: {evidence:?}"
                 );
-                // Keep partial transition events even if this observation is
-                // rejected and later service cleanup reaches the watchdog.
-                publish(shared, report);
-                observed?;
-            }
-            publish(shared, report);
-            return Ok(evidence.gates_open());
+                let deadline_ms = phase_deadline
+                    .min(self.deadline)
+                    .saturating_duration_since(self.started)
+                    .as_millis();
+                for export in &evidence.exports {
+                    let transition = report
+                        .gate_transitions
+                        .iter_mut()
+                        .find(|transition| transition.endpoint_id == export.endpoint_id)
+                        .context("missing initial gate/stamp baseline")?;
+                    transition.observe(
+                        export.native_stamp,
+                        export.gate_open,
+                        now_ms,
+                        deadline_ms,
+                    )?;
+                }
+                Ok(evidence.gates_open())
+            })();
+            // Publish the checkpoint and any partial gate transition together,
+            // even on failure. This copies the accumulated soak trail once.
+            record(report, stage, evidence, shared);
+            return observed;
         }
         // A missing current observation cannot satisfy end-of-phase readiness.
         Ok(false)
@@ -504,7 +741,7 @@ impl LiveSession<'_> {
         }
         ensure!(
             last.as_ref().is_some_and(
-                |(_, observed)| now.duration_since(*observed) <= Duration::from_secs(2)
+                |(_, observed)| now.duration_since(*observed) <= publication::FRESHNESS_LIMIT
             ),
             "service snapshot publication stale"
         );
@@ -640,12 +877,43 @@ impl LiveSession<'_> {
         });
         publish(shared, report);
         eprintln!("stage2: read-only exact root/stable ID -> MMDevice mapping");
-        let mut clients = native::Pair::prepare(
-            stable_ids,
-            (Instant::now() + Duration::from_secs(10)).min(self.deadline),
+        let prepare_deadline = (Instant::now() + Duration::from_secs(10)).min(self.deadline);
+        let handle = self.handle;
+        let (prepared, publication) = publication::observe_during(
+            self.last_snapshot.borrow().clone(),
+            move || handle.try_snapshot(),
+            || {
+                native::Pair::prepare_observed(
+                    stable_ids,
+                    prepare_deadline,
+                    self.deadline,
+                    |failure| {
+                        if report.error.is_none() {
+                            report.error = failure
+                                .first()
+                                .map(|evidence| evidence.original_error.clone());
+                        }
+                        report
+                            .pcm
+                            .as_mut()
+                            .expect("PCM evidence")
+                            .native_enumeration_failure = Some(failure);
+                        publish(shared, report);
+                    },
+                )
+            },
         )?;
-        report.pcm.as_mut().expect("PCM evidence").identity = Some(clients.identity.clone());
+        let evidence = report.pcm.as_mut().expect("PCM evidence");
+        evidence.prepare_publication = Some(publication.evidence(self.started));
+        evidence.identity = prepared.as_ref().ok().map(|pair| pair.identity.clone());
         publish(shared, report);
+        let mut clients = prepared?;
+        publication.require_fresh()?;
+        let latest = publication.into_latest();
+        report.last_snapshot_observed_ms = latest
+            .as_ref()
+            .map(|(_, observed)| (*observed - self.started).as_millis());
+        *self.last_snapshot.borrow_mut() = latest;
         self.require_running("before_native_client_start", report, shared, self.deadline)?;
         let outcome = (|| -> anyhow::Result<()> {
             let started = clients.start(&mut report.native_clients_started_by_probe);

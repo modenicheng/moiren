@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "../src/Lifecycle.h"
+#include "../src/RemovalDiagnostic.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -75,6 +76,32 @@ bool NT_SUCCESS(NTSTATUS status) { return status >= 0; }
 KIRQL KeGetCurrentIrql() { return CurrentIrql; }
 template<typename... Args>
 void VadTrace(int, int, const char*, Args...) {}
+struct RemovalRecord {
+    uint64_t Runtime;
+    vad::RemovalStage Stage;
+    bool HasStatus;
+    NTSTATUS Status;
+    bool NativeCall;
+};
+static std::vector<RemovalRecord> RemovalRecords;
+static void RecordRemoval(State* shared, ULONG index, uint64_t id, vad::RemovalStage stage,
+    bool hasStatus, NTSTATUS status, bool nativeCall)
+{
+    Check(!shared->Lock.Held && shared->Slots[index].Id == id,
+        "scalar diagnostics use the original slot without holding State");
+    RemovalRecords.push_back({id, stage, hasStatus, status, nativeCall});
+}
+
+void VadRecordRemoval(WDFDEVICE child, vad::RemovalStage stage,
+    bool hasStatus = false, NTSTATUS status = 0, bool nativeCall = false)
+{
+    Check(!child->Destroyed && !child->Shared->Lock.Held,
+        "real removal call sites collect only while context is live and shared lock is free");
+    Check(child->PolicyReleases == 0 || stage == vad::RemovalStage::Destroy,
+        "only the destroy callback may look up the WDF context after cleanup");
+    RecordRemoval(child->Shared, child->Context.Index, child->Context.Id,
+        stage, hasStatus, status, nativeCall);
+}
 Device* VadRoot(Device* device) { return device; }
 ChildContext* VadChild(Device* child)
 {
@@ -202,6 +229,7 @@ struct Fixture {
 
     Fixture()
     {
+        RemovalRecords.clear();
         Root.Shared = Child.Shared = &Shared;
         for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
             Check(vad::Reserve(Shared.Slots, Root.Session, NextId,
@@ -330,6 +358,15 @@ static void CleanupInsideAcxKeepsTemporaryReferenceUntilReturn()
         fixture.Child.DereferenceCalls == 3 && fixture.Shared.SharedReleases == 1 &&
         vad::Reusable(fixture.Shared.Slots[TestIndex]),
         "MarkMissing and temporary release finish before exact-once final destruction");
+    Check(RemovalRecords.size() == 4 &&
+        RemovalRecords[0].Stage == vad::RemovalStage::RemoveEnter &&
+        RemovalRecords[1].Stage == vad::RemovalStage::Cleanup &&
+        RemovalRecords[2].Stage == vad::RemovalStage::RemoveReturn &&
+        RemovalRecords[2].Runtime == snapshot.EndpointId &&
+        RemovalRecords[2].HasStatus && RemovalRecords[2].NativeCall &&
+        RemovalRecords[2].Status == STATUS_SUCCESS &&
+        RemovalRecords[3].Stage == vad::RemovalStage::Destroy,
+        "ACX return keeps the original runtime and status even after cleanup");
 }
 
 static void ForeignSessionAndUnknownIdsCannotRemove()
@@ -357,12 +394,39 @@ static void ForeignSessionAndUnknownIdsCannotRemove()
     fixture.Destroy();
 }
 
+static void ExactProductionRemovalStages()
+{
+    Fixture fixture;
+    fixture.Child.RemoveResults = {FirstFailure, STATUS_SUCCESS};
+    MOIREN_VAD_ENDPOINT_SNAPSHOT snapshot = {};
+    Check(VadRemoveChild(&fixture.Root, fixture.Child.Context.Id, &snapshot) == FirstFailure,
+        "failed actual Remove call remains failed");
+    Check(RemovalRecords.size() == 2 &&
+        RemovalRecords[0].Stage == vad::RemovalStage::RemoveEnter &&
+        RemovalRecords[1].Stage == vad::RemovalStage::RemoveReturn &&
+        RemovalRecords[1].HasStatus && RemovalRecords[1].NativeCall &&
+        RemovalRecords[1].Status == FirstFailure,
+        "record failure from the actual ACX call, not a synthetic success");
+    Check(VadRemoveChild(&fixture.Root, fixture.Child.Context.Id, &snapshot) == STATUS_SUCCESS,
+        "same-owner retry preserves real result");
+    Check(VadRemoveChild(&fixture.Root, fixture.Child.Context.Id, &snapshot) == STATUS_SUCCESS &&
+        RemovalRecords.size() == 6 && !RemovalRecords[5].NativeCall &&
+        RemovalRecords[5].Status == STATUS_SUCCESS,
+        "idempotent accepted remove is distinguished from another ACX call");
+    fixture.Cleanup();
+    fixture.Destroy();
+    Check(RemovalRecords.size() == 8 && RemovalRecords[6].Stage == vad::RemovalStage::Cleanup &&
+        RemovalRecords[7].Stage == vad::RemovalStage::Destroy,
+        "production callbacks retain cleanup then final-destroy evidence");
+}
+
 int main()
 {
     RepeatedFailuresRetrySameOwnerUntilSuccess();
     AcceptedRemovalIsIdempotentUntilDestroy();
     CleanupInsideAcxKeepsTemporaryReferenceUntilReturn();
     ForeignSessionAndUnknownIdsCannotRemove();
+    ExactProductionRemovalStages();
     std::puts("PASS: production-extracted REMOVE retry/failure propagation, revocation, "
-        "accepted idempotence, quota retirement, identity and reference lifetime (4 cases)");
+        "accepted idempotence, quota retirement, identity, reference lifetime and diagnostics (5 cases)");
 }

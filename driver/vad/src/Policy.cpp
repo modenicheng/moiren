@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
+#include "EndpointReference.h"
 #include "InterfaceName.h"
+#include "TerminalPolicy.h"
+// Instantiate the SDK property key in this translation unit, not a private GUID.
+#include <initguid.h>
+#include <devpkey.h>
+#include "PublicationIdentity.h"
 #include "Policy.tmh"
 
 VAD_PAGE static EVT_WDF_WORKITEM PreparePolicy;
@@ -27,7 +33,8 @@ static const GUID RealtimeCategory =
     {0xeb115ffc, 0x10c8, 0x4964, {0x83, 0x1d, 0x6d, 0xcb, 0x02, 0xe6, 0xf2, 0x3f}};
 
 static void SnapshotPolicy(VAD_CHILD* context, uint32_t* intent,
-    ULONG* neverDefault, WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS])
+    ULONG* neverDefault, WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
+    MOIREN_VAD_ENDPOINT_ID* stableId)
 {
     KIRQL irql;
     KeAcquireSpinLock(&context->Shared->Lock, &irql);
@@ -35,6 +42,7 @@ static void SnapshotPolicy(VAD_CHILD* context, uint32_t* intent,
     *intent = slot.Intent;
     *neverDefault = slot.AllowDefault ? 0u : 0x307u;
     RtlCopyMemory(name, slot.Name, sizeof(name));
+    *stableId = slot.StableId;
     KeReleaseSpinLock(&context->Shared->Lock, irql);
 }
 
@@ -57,25 +65,59 @@ static NTSTATUS SetValue(HANDLE key, PCWSTR name, ULONG type,
     return ZwSetValueKey(key, &path, 0, type, const_cast<void*>(value), size);
 }
 
+static NTSTATUS StageInterfaceName(const GUID& category, UNICODE_STRING* link,
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], ULONG nameBytes)
+{
+    // Only PreparePolicy's passive system worker calls this. Use the actual
+    // owned link before ACX enables it; this is not a final MMDevice rename.
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    NTSTATUS status = IoSetDeviceInterfacePropertyData(link,
+        &DEVPKEY_DeviceInterface_FriendlyName, LOCALE_NEUTRAL,
+        PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_STRING, nameBytes,
+        const_cast<WCHAR*>(name));
+    WCHAR readback[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    ULONG returnedBytes = 0;
+    DEVPROPTYPE type = DEVPROP_TYPE_EMPTY;
+    if (NT_SUCCESS(status)) {
+        // Getter Flags is reserved (zero), not the setter's persistent flag.
+        // Oversized/malformed results fail closed; never allocate or retry.
+        status = IoGetDeviceInterfacePropertyData(link,
+            &DEVPKEY_DeviceInterface_FriendlyName, LOCALE_NEUTRAL, 0,
+            sizeof(readback), readback, &returnedBytes, &type);
+    }
+    const bool matches = NT_SUCCESS(status) && type == DEVPROP_TYPE_STRING &&
+        vad::InterfaceNameMatches(name, readback, returnedBytes);
+    if (NT_SUCCESS(status) && !matches) {
+        status = STATUS_DATA_ERROR;
+    }
+    // One passive record per staged category; never log user-provided text.
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Policy typed interface name category=%!GUID! bytes=%lu type=%lu returned=%lu match=%u status=%!STATUS!",
+        &category, nameBytes, type, returnedBytes, matches ? 1u : 0u, status);
+    return status;
+}
+
 // The interface registration is deliberately retained for the child
 // lifetime. IoRegisterDeviceInterface documents that registrations are
 // persistent devnode state and need not be manually deleted; only the opaque
 // returned allocation is owned by this driver.
 static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     PCWSTR association, ULONG associationBytes, ULONG neverDefault,
-    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], UNICODE_STRING* link)
+    ULONG enableByDefault,
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
+    const WCHAR (&reference)[vad::EndpointReferenceUnits], UNICODE_STRING* link)
 {
     *link = {};
     const ULONG nameBytes = vad::InterfaceNameBytes(name);
     if (nameBytes == 0) {
         return STATUS_INVALID_PARAMETER;
     }
-    UNICODE_STRING reference;
-    RtlInitUnicodeString(&reference, VadAudioReference);
+    UNICODE_STRING referenceString;
+    RtlInitUnicodeString(&referenceString, reference);
     // Registration alone leaves the interface DISABLED. Never call
     // IoSetDeviceInterfaceState(TRUE) or let WDF automatically enable it.
     NTSTATUS status = IoRegisterDeviceInterface(
-        WdfDeviceWdmGetDeviceObject(child), &category, &reference, link);
+        WdfDeviceWdmGetDeviceObject(child), &category, &referenceString, link);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -113,6 +155,15 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
             &neverDefault, sizeof(neverDefault));
     }
     if (NT_SUCCESS(status)) {
+        if (enableByDefault != 0) {
+            // UnknownFormFactor render endpoints are otherwise disabled/hidden.
+            // This makes them usable; NeverSetAsDefaultEndpoint remains independent.
+            status = SetValue(endpointKey,
+                L"{F3E80BEF-1723-4FF2-BCC4-7F83DC5E46D4},4", REG_DWORD,
+                &enableByDefault, sizeof(enableByDefault));
+        }
+    }
+    if (NT_SUCCESS(status)) {
         const ULONG eventDriven = 1;
         status = SetValue(endpointKey,
             L"{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7", REG_DWORD,
@@ -132,12 +183,18 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     if (interfaceKey != nullptr) {
         ZwClose(interfaceKey);
     }
+    if (NT_SUCCESS(status)) {
+        // Preserve ordinary FriendlyName/EP0 metadata. Typed publication and
+        // its strict readback are the final gate, before ACX sees any link.
+        status = StageInterfaceName(category, link, name, nameBytes);
+    }
     if (!NT_SUCCESS(status)) {
         // The interface may have been registered before a registry write
         // failed. It is never enabled, but explicitly disable it here and
         // release the symbolic-link allocation.
         (void)IoSetDeviceInterfaceState(link, FALSE);
         RtlFreeUnicodeString(link);
+        *link = {};
     }
     return status;
 }
@@ -146,6 +203,8 @@ VAD_PAGE void VadReleasePolicy(WDFDEVICE child)
 {
     PAGED_CODE();
     auto context = VadChild(child);
+    context->PolicyStatus = STATUS_DEVICE_NOT_READY;
+    context->PolicyReference[0] = L'\0';
     for (ULONG i = 0; i < context->PolicyInterfaceCount; ++i) {
         // Copy into a known-initialized local before clearing the context.
         // This also makes the ownership transfer explicit to static analysis.
@@ -171,23 +230,78 @@ static void PreparePolicy(WDFWORKITEM work)
     uint32_t intent = 0;
     ULONG neverDefault = 0;
     WCHAR name[MOIREN_VAD_MAX_NAME_UNITS];
-    SnapshotPolicy(context, &intent, &neverDefault, name);
-    static const WCHAR speaker[] = L"{DFF21CE1-F70F-11D0-B917-00A0C9223196}";
-    static const WCHAR microphone[] = L"{DFF21BE1-F70F-11D0-B917-00A0C9223196}";
+    MOIREN_VAD_ENDPOINT_ID stableId = {};
+    SnapshotPolicy(context, &intent, &neverDefault, name, &stableId);
+    const auto& terminal = vad::EndpointTerminalPolicy(intent);
     const bool capture = intent == MOIREN_VAD_INTENT_MICROPHONE;
-    const PCWSTR association = capture ? microphone : speaker;
-    const ULONG associationBytes = capture ? sizeof(microphone) : sizeof(speaker);
     const GUID* categories[] = {
         &AudioCategory, capture ? &CaptureCategory : &RenderCategory,
         &RealtimeCategory};
+    const ULONG nameBytes = vad::InterfaceNameBytes(name);
+    if (nameBytes == 0) {
+        context->PolicyStatus = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // The sole caller queues and flushes this worker inside PrepareHardware.
+    // Publish only this raw child's PDO name from the locked snapshot; the
+    // setter copies it, so no slot/stack storage escapes. This is not a final
+    // MMDevice rename. No property work enters audio stream or RT callbacks.
+    auto pdo = WdfDeviceWdmGetDeviceObject(child);
+    NTSTATUS nameStatus = IoSetDevicePropertyData(pdo,
+        &DEVPKEY_Device_FriendlyName, LOCALE_NEUTRAL,
+        PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_STRING, nameBytes, name);
+    WCHAR readback[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    ULONG returnedBytes = 0;
+    DEVPROPTYPE type = DEVPROP_TYPE_EMPTY;
+    if (NT_SUCCESS(nameStatus)) {
+        // Getter flags are reserved. A malformed/oversized read is a failure,
+        // not permission to allocate, retry or accept the requested text.
+        nameStatus = IoGetDevicePropertyData(pdo,
+            &DEVPKEY_Device_FriendlyName, LOCALE_NEUTRAL, 0,
+            sizeof(readback), readback, &returnedBytes, &type);
+    }
+    if (NT_SUCCESS(nameStatus) && (type != DEVPROP_TYPE_STRING ||
+        !vad::InterfaceNameMatches(name, readback, returnedBytes))) {
+        nameStatus = STATUS_DATA_ERROR;
+    }
+    if (!NT_SUCCESS(nameStatus)) {
+        context->PolicyStatus = nameStatus;
+        return;
+    }
+    // Retained interfaces do not exempt the mutable PDO name from validation.
+    // Their publication reference and registration ownership stay untouched.
     if (context->PolicyInterfaceCount != 0) {
-        context->PolicyStatus = context->PolicyInterfaceCount == 3 ?
+        context->PolicyStatus = context->PolicyInterfaceCount == 3 &&
+            context->PolicyReference[0] != L'\0' &&
+            context->PolicyReference[RTL_NUMBER_OF(context->PolicyReference) - 1] == L'\0' ?
             STATUS_SUCCESS : STATUS_INVALID_DEVICE_STATE;
         return;
     }
+    // v2 is compatibility-only. Only negotiated CREATE_IDENTITY opts into
+    // immutable resolution; legacy new CREATE must not require provisioning.
+    NTSTATUS resolved = STATUS_SUCCESS;
+    if (context->PublicationMode == 0) {
+        bool committed = false;
+        resolved = vad::ReadCommittedPublicationReference(child, stableId, intent,
+            context->PolicyReference, committed);
+        if (NT_SUCCESS(resolved) && !committed) {
+            vad::EndpointReference(name, context->PolicyReference);
+        }
+    } else {
+        // InstallationId/mode are child-owned values set before enumeration.
+        // No root handle, Admin acquisition or caller-thread I/O escapes here.
+        resolved = vad::ResolvePublicationReference(child, stableId, intent,
+            categories, context->PublicationMode, context->InstallationId,
+            context->PolicyReference);
+    }
+    if (!NT_SUCCESS(resolved)) {
+        context->PolicyStatus = resolved;
+        return;
+    }
     for (const GUID* category : categories) {
-        NTSTATUS status = StageInterface(child, *category, association,
-            associationBytes, neverDefault, name,
+        NTSTATUS status = StageInterface(child, *category, terminal.Association,
+            sizeof(terminal.Association), neverDefault, terminal.EnableByDefault, name,
+            context->PolicyReference,
             &context->PolicyInterfaces[context->PolicyInterfaceCount]);
         if (!NT_SUCCESS(status)) {
             VadTrace(TRACE_LEVEL_ERROR, VAD_PDO,

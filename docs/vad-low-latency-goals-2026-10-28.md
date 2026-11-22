@@ -12,7 +12,10 @@ The canonical driver qualification verdict remains in
 
 - Make the minimum `Input -> Bus -> Output` route as low-latency as possible,
   aiming for measured end-to-end latency below 10 ms with stable, real output.
-  The graph contains no additional DSP or deliberate delay nodes.
+  The graph contains no additional DSP or deliberate delay nodes. Per the
+  2026-10-31 user amendment, if this is demonstrated impossible under the
+  current device conditions, pursue the defensible theoretical minimum and
+  best achievable stable setting instead, with the evidence limits below.
 - Do not trade continuity for a better number: count silence, short reads,
   dropped/duplicated frames, discontinuities, resets, and correlation failures.
 - Users must be able to change a VAD endpoint's displayed name. Preserve the
@@ -20,14 +23,549 @@ The canonical driver qualification verdict remains in
 - Treat application bypass here as the existing Process Loopback capture path,
   not bypassing a DSP node. Compare it with VAD under the same output conditions.
 - Build and prepare on the development host; install and debug the kernel
-  driver only on the separate test target. The existing VMware guest is the
-  functional driver target, not permission to install the driver on the host.
-- Keep each implementation/test/documentation slice atomic and push promptly.
+  driver only on the separate test target. Per the 2026-11-07 user amendment,
+  use the existing standalone remote test computer directly; VMware is not a
+  prerequisite. This is not permission to install the driver on the host.
+- Keep each implementation/test/documentation slice atomic locally. Per the
+  2026-10-29 user update, batch pushes at meaningful verified integration
+  checkpoints to avoid triggering CI for every small commit.
   Do not stage unrelated screenshots, JSON, or other user work.
-- The VM has a roughly 64 GB system disk. Delete obsolete, owned scratch
-  artifacts after verified archival; do not accumulate build trees or binaries.
+- Delete obsolete, owned scratch artifacts after verified archival; do not
+  accumulate build trees or binaries. If the optional historical VM is reused,
+  its roughly 64 GB system disk remains a separate storage constraint.
 
-## Inspected state
+### 2026-11-08 postboot checkpoint - current status
+
+This checkpoint supersedes earlier "awaiting reboot/preflight" statements below.
+The user has rebooted the standalone remote computer. Its fresh boot is
+2026-11-08T13:26:07.5Z (21:26:07.5 Asia/Shanghai); the full original read-only
+preflight verifies the613package/signatures/catalog, rollback, tool pins and
+ordinary Limited Explorer identity. There are no admitted audio results yet.
+
+The first actual diagnostic fails before task registration or probe/audio
+launch: Windows adds a documented default ETW hybrid-shutdown mode, which the
+old exact-mode checks reject both at readback and before STOP. The original
+owner remains pending rather than inventing normal closure. A separately
+reviewed, exact-handle failed-run recovery stops that trace and ends only the
+failed controller; the original entry writes its own failed terminal. Fresh
+readback finds no original owners/tasks and QUERY4201 for the stopped handle.
+All68failed-run/source/adapter members are archived and independently read
+back on the host. This is failed-run evidence, not a normal diagnostic export.
+
+The narrow explicit-mode repair passes296focused mocked-boundary checks on
+PowerShell5.1/7; target rerun remains pending review/deployment. The published
+04686d6dCI is not green: its Windows fixture rejects a noncanonical TEMP root.
+The test-owned canonical-path repair passes16checks per interpreter without
+weakening production admission. Neither local repair is a new exact-head CI
+result. See [postboot evidence](validation/2026-11-08-postboot-diagnostic.md).
+
+The explicit-mode rerun reaches task registration but its retained `RunEx`
+returns no valid running instance. Scheduler identity proves the exact task
+never ran and no worker/probe admission exists; the old controller nevertheless
+waited for managed terminal forever. Abort now separates dispatch request from
+bound instance, confirms the original trace-stopped evidence first, and retires
+only the verified never-run task after archiving its exact XML, while an unknown
+bound instance remains retained pending real terminal evidence. The failed run
+and external-recovery receipts are archived/read back host-side; remote bounded
+cleanup and a fresh create-only rerun remain pending. This is infrastructure
+progress only, not native audio evidence.
+
+No additional reboot is requested. Continue directly over `moiren-lan`, reuse
+the one fixed dedicated OBS path, and keep the user's ordinary applications
+untouched. Unlock only for a test requiring visible desktop input. The user's
+next action is not another reboot or a VM setup; the agent owns the script
+repair, verified rerun, archival and bounded cleanup. Repeated naming means
+renaming one stable logical endpoint A to B and back to A, checking each actual
+remove/recreate and preserved project binding, not copying binaries or merely
+changing UI text. Native naming, matched waveform and stable calibrated latency
+acceptance remain open; no sub-10-ms result or device-limit fallback is proven.
+
+### 2026-11-08 reusable test tools and user-owned reboot
+
+The [closed diagnostic export](validation/2026-11-08-removal-closed-export.md)
+now composes original result persistence and writer closure with bounded
+whole-run ZIP/readback and local-only acknowledgment. Original worker/probe and
+collector owners still drain after identity refusal without admitting new work
+or trusting caller completion flags. This host-only integration is not remote
+transfer, native approval, removal/name repair or S0-S5 acceptance. The next
+target run still requires the user's reboot confirmation and fresh provenance;
+local implementation/verification continues without operating the test machine.
+
+The [closed-run delivery slice](validation/2026-11-08-removal-delivery.md) now
+connects original-ack-pinned bounded download, complete host ZIP verification,
+host receipt upload, durable target acknowledgment and independently verified
+ack download to a create-new completion receipt. It uses the fixed standalone
+remote address, not a VM, and never restores controller/export authority from
+JSON. Host-only real Finish/export/host/target composition is not an actual
+remote transfer or driver test. That delivery slice grants no executable
+release; the later original-controller validation is tracked below. No native/
+physical verdict or cleanup permission follows.
+
+The [production handoff](validation/2026-11-08-removal-production-handoff.md)
+adds actual independently pinned layout-to-manifest generation, source locks
+before target imports, one retained entry process and original terminal/log/
+local-ack pins feeding the existing delivery pipeline. Closed exit1 evidence
+is delivered without native-success promotion. The independently reviewed
+source bundle names its base commit honestly rather than claiming an exact
+uncommitted Git tree. Host-only software/harmless-child composition does not
+perform a remote acquisition or open the native release. The pre-integration
+published PR26head1d7aab3conflicts with main; predecessor CI does not cover it.
+The handoff54c1ecd3and reviewed main snapshots7e4024e/ a50d52cdare now locally
+combined in bd149cd9without touching the original drafts. The final second
+integration passes939headless app tests/0failures/4ignored, all-target check,
+fmt and strict scoped Clippy. Its exact tree/source/log archive is verified.
+Keep PR26Draft, publish by normal fast-forward and observe that exact new head;
+local integration is not a new CI or native verdict.
+
+The later [original-controller release](validation/2026-11-08-removal-original-release.md)
+replaces unconditional refusal with the existing original constructor lifetime,
+independent manifest/ReviewedBundle pins and complete original source read
+locks. Actual Initialize/Release/staged-Managed composition is covered by
+harmless host fixtures; source locks remain owned through failed admission
+until original settlement/result/writer closure. Interrupted source disposal
+cannot be promoted to terminal/export by public completion flags. Focused
+PS5.1/7checks initially pass128and neighboring Python tests67. Independent
+review then reproduces collector relabeling and resettable-clock defects;
+the repaired constructor source binding and monotonic deadline pass156checks
+across18focused suites. The initial88suite matrix retains6failed shared-fixture
+suites; repaired independent review is CODE_CLEAR/0findings. The corrected
+full matrix completes88suites/1070checks with0failures and no drift;67Python
+neighbors then pass against the repaired pins.
+The published
+dc8b1270exact-head CI run42481793726completes20successful checks/jobs on its
+original handle, not replaced by predecessor green. The27-row actual artifact
+inventory has zero
+fresh target verifications;19local originals and15evidence files read back.
+The local reader is explicitly selected/tested, not relabeled as deployed.
+The user subsequently confirms reboot. Live read-only collection verifies
+boot2026-11-08T13:26:07.5Zand the expected613Running/OK/problem0SYS/PnP binding.
+Full fresh tool/signature/safety admission and actual manifest remain open;
+this basic metadata observation starts no audio, task, trace or desktop input.
+Release42dbdd5fand fixed-main merge847e2ee6are now committed locally. The app
+subtree matches the independently tested snapshot; scripts/driver remain
+unchanged through that merge. Publication and exact new-head CI are still
+separate gates, not covered by the olddc8b1270CI result.
+
+The user requires one reused OBS installation rather than copied executable
+trees for each experiment. Reuse the existing dedicated test installation at
+`D:\MoirenTest\20261101-clean-comb-probe-1320\obs-portable`; do not move it to
+another new path or create per-run OBS executables. Keep the user's ordinary
+OBS separate. Serialize use of the dedicated instance and archive the small
+profile/scene/log evidence per run, not another application tree. Preserve any
+externally owned running instance and never change firewall/security policy to
+suppress prompts. Remove obsolete owned test copies after evidence readback,
+and retire their archived test tasks so they cannot relaunch obsolete paths.
+The [November8 cleanup receipt](validation/2026-11-08-reused-obs-cleanup.md)
+records deletion of30redundant trees and retention of the original fixed path;
+its external-process continuity limitation remains explicit.
+The [reused-path helper](validation/2026-11-08-obs-reuse-helper.md) implements
+exclusive live-handle leasing, bounded configuration-only archival and one
+observable launch at that fixed path. Its26file/mocked-boundary tests and actual target
+read-only check do not substitute for wiring the next native acquisition or
+for recording/quality acceptance. Historical copying runners stay retired.
+
+The [composed OBS capture session](validation/2026-11-08-obs-capture-session.md)
+now connects fixed-path setup, authenticated bounded RPC, recording transition
+ownership and graceful teardown. Its129file/mocked-boundary tests include the
+actual JSON client with fake wire/process boundaries; uncertain Start/Stop
+replies retain ownership rather than authorize a next route. This is software
+integration, not a native OBS recording or accepted matched acquisition. A
+separately pinned post-reboot native runner remains necessary.
+
+The user performs any required system reboot. The agent must explain the
+observed reason and stop disruptive/native follow-up until the user has
+rebooted; this is not authorization for automatic reboot or retry. Driver
+installation returned3010 on November8; service-file/PnP613 does not establish
+that the in-memory image has completed its transition. All original S0-S5
+requirements remain unchanged.
+
+### 2026-11-07 direct remote target and desktop scope
+
+The user explicitly selects the existing separate remote test computer instead
+of requiring VMware. Earlier records that require starting/unlocking the
+encrypted VM describe the then-current plan and no longer block direct remote
+driver work. Keep package/signature/loaded-SYS provenance, rollback readiness,
+endpoint ownership and explicit handling of disruptive install/reboot steps;
+do not silently alter boot/security policy or stop protected external clients.
+
+An unlocked, usable desktop is a prerequisite only for tests that exercise
+ordinary visible desktop input, not for every SSH, CLI, metadata or audio test.
+Schedule noninteractive work independently when its own token/session/device
+requirements are met; a locked screen is not itself evidence that such work
+cannot run. Conversely, a reachable SSH/session0 token does not establish
+usable input in the app's interactive session. The stopped point observation
+supports exact-root input refusal in that snapshot, not a WTS lock-state
+diagnosis. Do not bypass a foreign/system cover to obtain a desktop pass.
+
+### 2026-11-03 development and test scheduling
+
+The user permits independent development and remote long-duration tests to run
+in parallel. Native audio, desktop UI, OBS and driver/device exercises remain
+remote-only; do not launch host audio/UI or operate existing host processes.
+Host compilation, pure/offline tests and headless UI tests are permitted.
+
+Run a long test only for a distinct unanswered question, with a pinned binary,
+isolated settings/evidence, a finite deadline and owned-process cleanup. Reuse
+the result while development continues; a new build does not retroactively
+change the revision under test. Serialize tests that share audio endpoints,
+drivers or recording resources. Preserve external OBS/QQMusic owners; unchanged
+process IDs alone do not prove their audio was uninterrupted.
+
+First-packet investigation remains deferred. The user's approximately ten-minute
+manual run is useful usability feedback, not calibrated latency or complete
+waveform evidence. Missing physical capture equipment and that deferred issue
+do not block independent product work. Do not repeat unchanged soaks or invent
+extra qualification requirements merely to keep this task active.
+
+### 2026-10-31 target-device fallback
+
+Sub-10-ms remains the preferred objective, not a reason to stop useful
+development or repeatedly retest an unrelated limitation. The user accepts
+the minimum achievable under the current device conditions only after the
+sub-10-ms limitation is evidenced; no such impossibility is established yet.
+
+- Declare the exact device, driver, source path, native mode/rate/period,
+  graph, load, measurement endpoints and uncertainty for every conclusion.
+  Keep VAD/Process and internal-software/physical results separate. A result
+  for one mode/device/path is not a result for every supported configuration.
+- Distinguish a justified theoretical lower bound, the minimum observed stable
+  configuration and the unresolved gap between them. Do not call the current
+  best run the theoretical minimum or add overlapping nominal buffer/period
+  quantities as if they were independently measured pipeline delays.
+- Support an irreducible limiting boundary with calibrated measurement and/or
+  a validated device/driver timing constraint for the declared configuration.
+  Account for uncertainty and demonstrate which remaining controls can or
+  cannot reduce it. One failed shallow-buffer run, API minimum period, current
+  Shared default, VM jitter or incomplete calibration does not prove that
+  sub-10-ms physical latency is impossible.
+- Reduce removable queue/phase/processing overhead one admitted configuration
+  at a time. If a lower bound is not defensible, report the best stable result
+  and remaining unknowns rather than manufacturing an impossibility verdict.
+- Keep real non-silent output, continuity, cleanup and sustained-load gates
+  unchanged. Correctness-mode jitter grace is diagnostic only; it neither
+  permits production audio latency nor hides underruns, loss or resets.
+- Once the evidence-gated fallback applies, report achieved p50/p95/p99/max,
+  uncertainty, the lower bound, remaining gap and owning boundary. A result
+  above10ms may meet this conditional device-limited objective, but must never
+  be labelled a sub-10-ms pass. Do not silently enlarge a buffer or move the
+  measurement boundary to produce a better claim.
+
+## Current pipeline status - 2026-11-08
+
+The later [retained diagnostic controller](validation/2026-11-08-removal-diagnostic-controller.md)
+connects the original writer, pinned run inputs, actual BEFORE/AFTER collector
+runspaces, managed staging and finish/retirement composition. Read-tool pins
+remain identical through real runspace dispatch; timeout/configuration refusal
+continues observing original children instead of retrying or dropping owners.
+Host-only lifetime composition uses the actual controller/lease/C# trace owner
+with injected APIs, not native diagnostic acceptance. Owner-aware actual native
+admission is extended by the software preparation below; postboot verification
+remains open. No driver/audio/OBS/reboot or
+replacement EXE tree is introduced, and all S0-S5 requirements remain intact.
+
+The [owner-aware operation admission](validation/2026-11-08-removal-native-admission.md)
+binds exact trace/task/managed/decode resources to the original live controller
+and writer, with final birth freshness and separate cleanup lifetime authority.
+Registration seals original COM owners/XML; direct retirement requires whole
+terminal checks and persisted evidence. Known predispatch refusal is distinct
+from unknown native output, without retries or invented status. Host-only
+composition covers failed-enable exact STOP and AFTER receipts, not actual
+native acceptance. The executable release remains unconditionally closed
+pending reviewed target orchestration and bounded archive/transfer; user reboot
+confirmation and fresh postboot provenance are still required.
+
+The original S0-S5 requirements below remain the completion criteria. Subsequent
+implementation is recorded in the
+[software ledger](validation/2026-10-29-s1-s3-software-ledger.md) and the
+[2026-11-04 pipeline checkpoint](validation/2026-11-04-pipeline-checkpoint.md).
+The original source audit in the next section is historical, not current
+configuration or acceptance evidence.
+
+The [November8 main integration](validation/2026-11-08-main-settings-integration.md)
+reconciles main's workspace settings with exact transport/measured admission,
+retains requested/active diagnostics, and repairs constrained scrolling and
+editor/cache regressions. Workspace/headless tests pass2,651with10ignored;
+strict all-target Clippy and formatting pass. This is software integration,
+not a native naming, waveform, latency or aggregate S0-S5 pass.
+
+The [November8 diagnostic deployment](validation/2026-11-08-vad-removal-stage-deployment.md)
+returns3010 and awaits the user's reboot. Disk/PnP613 metadata is not an
+in-memory transition or cleanup pass. Its29passing offline-reader tests
+cover association/refusal behavior, not a new native trace. No automatic
+reboot, unchanged failed native retry or acceptance-gate change follows.
+
+The [November8 naming identity audit](validation/2026-11-08-vad-name-identity-contract.md)
+confirms that the current name-derived interface/circuit reference conflicts
+with retaining Windows endpoint identity/settings. Existing tests enforce that
+reference change and therefore do not establish S4 preservation. Separate
+immutable publication identity, installed-endpoint adoption and actual mutable
+Windows name publication; a refusal-only safeguard does not complete S4.
+
+The later [single policy authority](validation/2026-11-08-policy-reference-authority.md)
+removes independent audio-side name hashing: category staging and ACX consume
+one child-owned locked-snapshot reference. Production-extracted composition,
+Windows22/Ubuntu17host suites and WDK Analyze/INF pass. Historical derivation
+remains for compatibility; durable identity/adoption and final Windows name
+publication are still unimplemented. The remote613package is unchanged.
+
+The later [durable publication identity](validation/2026-11-08-durable-vad-publication-identity.md)
+adds an explicitly negotiated establish/reopen protocol, persistent root/child
+identity, supported unique legacy adoption and mixed-version retention. The
+ordinary application Create path now allocates and retains fresh authority;
+saved IDs and post-Removed rename recreate through reopen, with queued document
+revocation and no token in project data. Driver22/portable17, backend280,
+parent workspace/headless2,665tests(10ignored), all-target strict Clippy and
+formatting pass. This is source integration only: final mutable Windows name,
+default/settings preservation and native S4 cases remain unqualified. No
+replacement for the frozen installed613image or user reboot occurs.
+
+The later [child PDO name publication](validation/2026-11-08-child-pdo-name-publication.md)
+sets and strictly reads back the locked requested name on the exact child PDO
+inside PrepareHardware's flushed system worker, including the three-interface
+cache path. Production-composed tests refuse ACX allocation/addition after
+12failure modes on initial/cached policy; Windows22/Ubuntu17and WDK Analyze/INF
+pass. Durable reference/categories/ACX and raw final-MMDevice checks stay
+unchanged. This supported metadata prerequisite is not proven final MMDevice
+name propagation or native S4; installed613and user-owned reboot are untouched.
+
+The [retained task/trace preparation](validation/2026-11-08-removal-task-trace-preparation.md)
+is repository source. The later
+[managed probe admission](validation/2026-11-08-managed-removal-admission.md)
+connects the actual worker action to the independently retained probe and an
+opt-in pre-audio Rust gate. Both process handles and matching natural exits,
+not detached JSON, establish terminal ownership. Real harmless worker/probe
+chains pass under both PowerShell interpreters; all755example tests pass with
+one ignored. Actual scheduler/trace dispatch still refuses pending fresh target
+provenance and reviewed orchestration. No native acquisition or S0-S5 pass follows.
+Its exact published predecessor4573d48 CI42449989373 later finishes20/20jobs;
+the original watcher23584 exits0. Later identity changes do not inherit that
+hosted result.
+
+The later [owned ETW session](validation/2026-11-08-owned-etw-removal-session.md)
+composes retained StartTrace ownership, actual classic-WPP session/provider
+readback, fresh query before managed probe admission and immutable one-shot
+final STOP receipts. Its five new suites and existing CI preparation suites
+pass168checks per PowerShell interpreter with native API delegates replaced;
+the full composition exercises actual owner, Marshal buffers and policy.
+This closes the disconnected readback/owner integration gap, not native removal
+diagnosis. Actual dispatch remains guarded pending combined fresh post-reboot
+provenance, bounded orchestration, closed-ETL decode/archive and cleanup. No
+test-machine reboot, new EXE tree, OBS run or acceptance-gate change occurs.
+
+The later [managed task retirement](validation/2026-11-08-managed-task-retirement.md)
+recomputes current original worker/probe/task terminal ownership, binds this
+run's stopped trace, archives/hash-verifies original task XML and permits one
+exact guarded retirement without retry. All14preparation suites pass177checks
+per PowerShell interpreter; separate real harmless/cross-language checks pass.
+A fresh managed release is built/pinned locally at26cd706, not deployed or run.
+Actual scheduler cleanup remains guarded; combined post-reboot orchestration
+and all original native gates stay open. Identity0098c69's exact CI42452098679
+later completes20/20successful jobs and its original watcher exits0; newly
+published26cd706 has a separate still-running CI42454664245.
+
+The later [managed removal finish](validation/2026-11-08-managed-removal-finish.md)
+connects original terminal task/worker/probe ownership, one owned STOP,
+post-STOP closed-file pins, retained decoder children, immutable receipt pins,
+verified evidence before retirement and a separately persisted retirement result.
+Input/output/receipt or full-argv changes refuse cleanup; unresolved children
+continue through their exact owners without relaunch. All16preparation suites
+pass213checks per PowerShell interpreter, including17decode and19finish checks;
+the offline reader separately passes29. Default native/tool/cleanup guards
+remain closed; this is not a remote acquisition, removal repair or S0-S5 pass.
+Exact predecessor26cd706's CI42454664245 now completes20/20successful jobs and
+its original watcher36444 exits0; the new delta does not inherit that result.
+The user-owned reboot and unchanged installed613provenance remain prerequisites
+for later native work, not blockers for this local implementation.
+
+The later [read-only target readiness](validation/2026-11-08-removal-target-readiness.md)
+connects the actual entry, retained collector runspace/finite children and
+original process-handle-based Limited user-session discovery. Controller
+session0 remains distinct from the observed nonzero worker session. Create-new
+readback-hashed receipts bind both observations; source/owner/receipt repinning
+refuses, and timeout preserves original work without retry or late acceptance.
+The Windows CI matrix now includes24preparation suites. This read-only entry
+does not authorize scheduler/trace/audio/decoder/cleanup dispatch or establish
+target access, desktop input, removal repair or an S0-S5 pass. The full combined
+native runner and user-confirmed reboot/fresh provenance remain required.
+
+The [fixed Process candidate section receipt](validation/2026-11-08-fixed-process-candidate-sections.md)
+recomputes both channels at all six retained onsets. Identity1 has non-silent
+quarters but quarter4 correlation0.67284 fails the unchanged0.7 gate. This
+explains the fixed candidate's refusal without establishing the distortion's
+cause, accepting the missing identity, or completing waveform correspondence.
+
+| Slice | Current evidence | Remaining acceptance |
+| --- | --- | --- |
+| S0 | Requirements, scoped commits, binary/configuration pins and bounded archival workflows exist; current-main integration/release and scoped portability repairs have local evidence. Published both-route wait repair `8761d07` completes exact-head CI `41915822264` with all 20 jobs successful. Its final-source workspace/headless run passes 2625 tests with both opt-in features, and the optimized example has a verified immutable copy. | Preserve provenance and unrelated work across subsequent native/qualification changes. |
+| S1 | All four route harnesses and bounded boundary observations exist, including opt-in pure-virtual Engine callback timing. Frozen metadata rules out assigning all replacement residuals to client Stop-tail inventory, without implying DAC presentation. PCM persistence/decode refusals pass 35 regressions per platform. A later direct-remote pair uses the corrected graceful OBS close order; both instances exit normally. Process source/graph cleanup completes; actual Process/VAD reference media retain all six nominal codes, and Process return resolves0,2,3,4,5. | VAD fails the unchanged20s direct-Removed cleanup gate despite joined source and Closed Engine. Return code1 section matching remains unresolved. The closed after-error VAD MKV is30.700s and fails the unchanged30s offline cap. Matched accepted routes, explained full correspondence and calibrated measurement remain open. No cap/gate relaxation or unchanged native retry follows; the separate frozen reader still lacks its original token/OBS guard. |
+| S2 | Independent VAD target/capacity, actual-demand admission, priming, servo and bounded recovery are implemented. | Native period/block combinations and sustained quality do not yet qualify a lower default. |
+| S3 | API, CLI and desktop support exact input intent, visible refusal and prepared owner replacement; target1280 activation is recorded. The November7 stopped-only read-only point snapshot identifies a foreign LockScreenBackstopFrame over Settings, without diagnostic input or audio. The separate local runner generation correction passes software checks only. | An unobstructed interactive target, successful ordinary desktop retained Stop/Evaluate/Apply and continuous native waveform acceptance remain open; the retained archive's event-order refusal is separate. Forced diagnostic-app cleanup remains a failed lifecycle, not desktop acceptance. |
+| S4 | Safe recreation, stable project binding, separate requested/provider/Windows names and interruption notices exist; the software-output category candidate passes host/portable/WDK checks. The streaming harness requires old/new Start/PCM, direct Removed, exact name and fresh confirmation. Readiness waits now retain current-request errors from both route exports before checking readiness; final PCM retains the bounded gate/freshness contract. Pre-client admission permits legal generation zero while final PCM still requires a nonzero generation. Tests pass 145 on Windows and 124 on Linux stable. | Windows-visible name acceptance, migration/default roles and the required native streaming/held-client/race/repetition cases remain open. Use the standalone remote target per the November7 amendment, with package/signature/rollback and endpoint guards; VM startup is not required. |
+| S5 | Deterministic/RT software checks and finite native receipts exist. Offline qualification now checks both p95 and p99 plus calibration uncertainty strictly below10ms, matching the current S5 requirement rather than the older p95-only rule. | Repeated/load/non-silent sustained runs and calibrated p95/p99 below10ms, or the evidenced device-limited fallback, remain open. |
+
+No aggregate percentage, software test total or successful lifecycle substitutes
+for these acceptance requirements. Existing delivery-gap violations, waveform
+residuals and genuine PCM/epoch faults remain visible. Initial-packet work stays
+deferred; missing physical capture equipment does not block independent work.
+
+### Later direct remote deployment - 2026-11-07
+
+The later [waveform checkpoint](validation/2026-11-07-matched-waveform-checkpoint.md)
+uses clean `b08f61b` binaries directly on the standalone target. One bounded
+Process acquisition retains complete source/reference/graph data and closed
+OBS media, but forced OBS cleanup stops the pair before VAD. This repeats a
+previously documented close-order runner defect; the established correction
+is recovered and passes15pure checks without another acquisition. Canonical
+v3 offline analysis passes28synthetic checks and finishes against the actual
+closed media with unchanged input hashes: all six reference identities, return
+identities2,3,5, no quality/latency pass. Both native safety audits and all100
+compact archive member pins verify; original29 draft/cache hashes remain
+unchanged. Full S0-S5 acceptance remains open.
+
+The later [history/consumption receipt](validation/2026-11-07-endpoint-history-and-consumption.md)
+uses guarded read-only queries at21:26 and21:38. Fixed raw PDOs first install
+on October25, while the seeded controls first install November7; these dates
+do not prove MMDevice consumption or who disabled a device. Exact retained
+endpoint GetDevice succeeds for all six IDs, including fixed Playback missing
+from a separate PnP inventory. Its endpoint store has no EnableEndpointByDefault
+value (S_OK/VT_EMPTY), while both seeded Playback stores retain0x101 despite
+identical current interface staging. All are NOTPRESENT after cleanup; the
+earlier live DISABLED failure remains. This is a retained policy/name divergence,
+not a migration fix, enablement, PCM pass or exact-name acceptance. Both13-file
+archives and external-state/idle audits verify; original29 draft/cache pins
+remain unchanged. Published0fdc2c6 completes CI42374879801 with20/20 successful
+jobs and original watcher99946 exit0, closing software CI for the state slice.
+The current display-name-derived KS reference also needs reconciliation with
+Windows endpoint settings/identity preservation; do not rotate identities to
+manufacture a fresh-policy/name pass. All original S0-S5 gates remain in force.
+
+The [policy/state receipt](validation/2026-11-07-endpoint-state-and-policy.md)
+compares18 exact persisted registrations from the fixed and earlier seeded
+fixtures. Both Playback policies already contain0x101 enablement and the
+same OUTPUT_UNDEFINED association. The snapshot rules out currently missing
+staging, without proving policy consumption, disablement origin or migration.
+Exact phantom-allowed PDO reads distinguish the fixed Models description
+from requested bus text and report no FriendlyName value; no raw MMDevice
+name fix or live publication timing follows. All61 terminal files are archived
+and length/hash verified, including helper failures/corrections. The target
+is used directly, without VM startup, desktop input/unlock or native audio Start.
+
+Product observations now retain raw Windows endpoint state and independent
+state-read errors in the service, probe, Exports and diagnostics, separately
+from provider presence and Engine readiness. No ACTIVE inference, enablement
+or acceptance-gate change is introduced. The pinned17-file slice passes2636
+Windows workspace/headless tests with10 ignored and155 integration example
+tests; Linux example133, observer17, app618 with2 ignored and acceptance7 pass.
+Windows/Linux strict workspace Clippy and formatting pass. Clean released004809
+then runs once directly on the target at20:52:50..20:53:14: the new product
+fields observe initial NOTPRESENT followed by Microphone ACTIVE and Playback
+DISABLED on the same identities, independently matched by failure enumeration.
+The PCM run still fails before probe Start, with zero acquired signal frames;
+join/release/cleanup and external-state/idle audits pass. Its17 terminal files
+are hash/length archived. This verifies new-source state propagation, not
+Windows-name, PCM or S1/S4/S5 acceptance. Published6401849's20-job CI is green;
+the later0fdc2c6 source publication now also has matching20-job green CI.
+
+The later PCM extension in8318308 passes154 Windows/132 Linux example tests
+and strict Clippy without changing ACTIVE admission or PCM gates. At19:43 its
+failure collector completes both flows and finds the exact fixed-fixture
+Playback/provider MMDevice DISABLED, while the matching Microphone is ACTIVE.
+That narrows this failure snapshot; disablement origin, earlier state,
+creation-policy consumption and migration remain unproven. The mapping timeout
+occurs before probe Start and yields no PCM, despite observed Engine timeline
+advancement during the idle hold. Cleanup/join/release and external-state audits
+pass; report acceptance remains failed. Both independent PCM terminal archives
+are hash/length verified. No endpoint enablement, identity rotation, historical
+device deletion or lock-state inference is performed. Next inspect exact
+interface EP0 policy read-only rather than repeat the unchanged native run.
+Prior published c890e50 finishes all20 CI jobs at19:45; that result does not
+qualify the subsequent diagnostic commits or any native/physical gate.
+
+The later [enumeration receipt](validation/2026-11-07-rename-enumeration-evidence.md)
+adds failure-only ALL-state metadata while retaining ACTIVE admission. Windows/
+Linux tests pass152/130 and strict Clippy passes. At19:29 both directions'
+held/replacement initialization, direct Removed and fresh Engine confirmation
+complete, but both exact Windows names retain adapter suffixes. Enumeration
+does not fail, so the prior timeout's cause/fix remains unproven; Starts0/no
+PCM. This bounded observation is still failed/unqualified, not S4 completion.
+
+The [direct remote612 receipt](validation/2026-11-07-direct-remote-category.md)
+records actual candidate/rollback signing verification, guarded installation
+and exact-root device restart with no Windows reboot or security/default/volume
+changes. The old611 package remains verified locally/remotely. The candidate
+is the default non-opt-in diagnostic build, not a relabelled611 binary.
+Stage1 native service Apply/Stop/join passes. Streaming refuses before Start
+or rename on the existing identity; a separate explicitly seeded held-client
+diagnostic initializes Playback but fails Stop with a sticky no-ready packet
+stream error and nonempty public exit cleanup_error. Source investigation
+identifies early first-owner preparation during legal Paused/zero-packet
+allocation; the focused repair passes workspace/headless tests, the145-test
+integration example suite and strict Clippy. Its clean corrected release is
+tested at19:01 on the same explicit fixture: both held clients and direct old
+Removed checkpoints complete; Playback replacement enumeration fails while
+Microphone replacement/Engine confirmation succeeds but exact name fails on
+the adapter suffix. Cleanup/join/release and external-state audits pass; this
+held-only run makes no Start/PCM claim. None of these steps closes full
+exact-name/streaming/held/repetition/race/default-role acceptance,
+the desktop gate, sustained audio or calibrated physical p95/p99.
+
+### Remote-priority update - 2026-11-07
+
+The [fresh remote receipt](validation/2026-11-07-remote-priority.md) supersedes
+November5's readiness assumptions, not the S0-S5 acceptance criteria. The
+expected target and unchanged loaded driver are reachable. A bounded session1
+observer now sees a PowerShell foreground rather than the lock screen, but the
+subsequent stopped-only owned-input control still refuses an obscured or
+different/child HWND before posting any click. After correcting an evidenced
+cross-token process-metadata runner defect, that actual control terminates
+Ready/result1 with no audio start, no remaining owned process and unchanged
+defaults/render controls/protected identities. It is not desktop acceptance.
+Historical OBS12648 is now absent, so the frozen metadata reader lacks that
+guard as well as its exact non-admin token. The driver VM remains stopped.
+No unchanged native retry, new driver installation, threshold change or
+physical/full-pipeline verdict follows.
+
+The same receipt records a local-only retained desktop worker repair: Stop
+advances intent1->2, and explicit retained Apply starts owner3 rather than2.
+Five expectation sites now follow the existing service contract without
+changing predecessor evidence or timing gates. Both PowerShell shells pass34
+pure checks each, and the software-backed Rust service regression passes1test
+with its F32/F64 loop. No corrected worker is deployed or run natively; the
+17:31:38 read-only remote check still finds no test owners and the driver VM
+inventory remains empty. These checks do not close S3 or any physical gate.
+
+The receipt's later one-shot observation answers the missing hit identity:
+at17:42:07+08:00, Settings center1482/171 hits foreign PID13100,
+HWND855132, class`LockScreenBackstopFrame`, not the owned Moiren root.
+No diagnostic click/Invoke/audio occurs. Owned Close then forced cleanup
+remains a failed lifecycle;13 raw artifacts are verified, protected identities
+and driver/defaults/render controls are unchanged, and no owner/running test
+task remains. This snapshot neither explains the earlier run retrospectively
+nor establishes WTS lock state or a product/DPI defect. No unchanged retry or
+bypass follows. Visible desktop input remains unqualified; the later direct
+remote amendment removes VM startup as a prerequisite for independent work.
+
+The [removal-stage diagnostic slice](validation/2026-11-07-vad-removal-stage-diagnostics.md)
+fills the source-supported native teardown observability gap with bounded
+exact-runtime stages and explicit lost-pending provenance, not a cleanup repair.
+Production RED/GREEN,21MSVC suites,16Windows/GCC portable suites and WDK Analyze/
+InfVerif pass; matching TMFs are generated. Direct remote612 is unchanged, so
+native stage acquisition and every original S0-S5 acceptance gate remain open.
+
+The [later paired-waveform receipt](validation/2026-11-07-matched-waveform-cleanup.md)
+retains one actual direct-remote Process/VAD pair with normal OBS shutdown,
+tested native-error refusal and VAD Removing/Closed cleanup failure. Both
+28canonical and4focused offline tests pass remotely; actual analysis preserves
+partial/quality failure, unchanged input hashes and the30s container cap.
+All166compact archive members and29original draft/cache pins verify. Cleanup
+source review identifies missing native ReleaseHardware/final-destroy evidence,
+not a justified repair. This requires neither VM nor desktop unlock and does
+not close any S0-S5 acceptance gate.
+
+The later [wait-error repair](validation/2026-11-05-s4-wait-error-retention.md)
+closes two source-supported false-acceptance paths, not native qualification.
+
+## Inspected state - original source audit
 
 ### Driver and naming
 
@@ -159,7 +697,8 @@ topology in core and preparation/runtime contracts in engine.
 
 - Commit/push this requirement and audit record separately from code.
 - Before each implementation slice, check worktree state; stage explicit paths,
-  run relevant checks, commit, push and verify the remote hash.
+  run relevant checks and commit locally. Batch remote updates at verified
+  integration checkpoints, then verify the remote hash.
 - Before deployment, record host/guest builds, loaded package/SYS hash, binary
   hash, active settings, installed-driver status and free space.
 
@@ -188,10 +727,11 @@ analyzer on known delay, drift, silence, dropped data, and epoch changes. Report
 measurement endpoints, uncertainty, sample count, p50/p95/p99/max and startup
 separately. A software-loopback receipt does not certify acoustic/physical E2E.
 
-The VM remains the driver functional and failure-recovery target. Physical
-qualification needs a suitable separate hardware target, or an explicitly
-documented physical-device/measurement setup in the guest. Do not install the
-test driver on the development host to bypass this constraint.
+Use the separate remote computer for driver functional and failure-recovery
+work per the November7 user amendment; a VM is optional, not mandatory.
+Physical qualification still needs a declared hardware/measurement setup and
+calibration; standalone execution alone is not physical latency evidence.
+Do not install the test driver on the development host to bypass this constraint.
 
 ### S2 - VAD operating budget, independently of capacity
 
@@ -252,11 +792,14 @@ test driver on the development host to bypass this constraint.
 - Require no unexplained steady-state drops, underruns, resets, silent holes or
   signal-analysis failures. Expected fault-injection loss is a separate verdict.
 - If native client/device cadence prevents the target, retain the best stable
-  setting and report the measured floor and owning boundary. Do not hide failure
-  by increasing buffer size or changing a threshold in the same experiment.
+  setting and apply the evidence-gated target-device fallback above. Report the
+  measured floor, justified lower bound, remaining gap and owning boundary.
+  Do not hide failure by increasing buffer size or changing a threshold in the
+  same experiment.
 - Run focused Rust/driver tests per slice; complete relevant fmt/check/test,
   strict Clippy and Windows/Ubuntu/Miri CI before integration. Kernel changes
   additionally require WDK analyzed build, INF checks and a new target package.
 
-Only S0 is performed by this document. S1-S5 are proposed future work; no new
-PCM measurement, buffer tuning, rename target run or stability pass is claimed.
+The initial2026-10-28audit performed S0 only. Later S1-S5 work is tracked in the
+current pipeline status and linked receipts; none of those software increments
+alone establishes a native waveform, rename, sustained or physical-latency pass.

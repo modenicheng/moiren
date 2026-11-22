@@ -4,6 +4,7 @@ use super::super::*;
 use crate::service::fault_causes;
 
 /// Project the backend's live prepare progress (issue #105) into the
+/// Project the backend's live prepare progress (issue #105) into the
 /// snapshot's Starting detail: shown only while the owner that published it
 /// is still preparing, cleared on every other execution state so a stale
 /// record never outlives its prepare.
@@ -26,30 +27,54 @@ impl ManagedDriver {
     /// Publish native and professional observations, filtered by the running
     /// owner generation. Refreshes are tick-batched at 1 Hz: the raw counters
     /// advance every audio block, while the UI renders only static timing
-    /// rows. Generation and running-state transitions stay prompt through the
-    /// snapshot-side freshness filters rather than this cadence.
+    /// rows. Owner/execution transitions bypass this cadence and invalidate
+    /// stale native snapshots before they can be published again.
     #[cfg(windows)]
-    pub(super) fn poll_observations(
+    pub(in crate::service::managed) fn poll_observations(
         &mut self,
         c: &mut ServiceContext,
-        snapshot: &host::ProjectSnapshot,
+        state: &host::HostSnapshot,
         generation: SessionGeneration,
     ) {
         let now = std::time::Instant::now();
-        let due = self
-            .observation_refreshed_at
-            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
+        let identity = (generation, state.owner_generation, state.execution);
+        // Recovery can replace a native owner inside one app generation.
+        // Invalidate stale DTOs before the cadence guard, not one second later.
+        let fresh = |observed_generation, running, owner_generation| {
+            observed_generation == generation
+                && running
+                && owner_generation == state.owner_generation
+                && state.execution == ExecutionState::Running
+        };
+        if c.native_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.native_observations = None;
+        }
+        if c.professional_observations.as_ref().is_some_and(|value| {
+            !fresh(
+                value.generation,
+                value.observation.running,
+                value.observation.owner_generation,
+            )
+        }) {
+            c.professional_observations = None;
+        }
+        let due = self.observation_identity != Some(identity)
+            || self
+                .observation_refreshed_at
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1));
         if !due {
             return;
         }
         self.observation_refreshed_at = Some(now);
+        self.observation_identity = Some(identity);
         // Write-side stale guard: an observation counts only while its own
         // owner generation still runs.
-        let fresh = |running: bool, owner_generation: u64| {
-            running
-                && owner_generation == snapshot.state.owner_generation
-                && snapshot.state.execution == ExecutionState::Running
-        };
         c.professional_observations = self
             .professional_observations
             .as_ref()
@@ -60,8 +85,35 @@ impl ManagedDriver {
                     .as_ref()
                     .and_then(|value| value.snapshot())
             })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
             .map(|observation| ProfessionalSessionObservations {
+                generation,
+                observation,
+            });
+        c.native_observations = self
+            .native_observations
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot())
+            })
+            .filter(|observation| {
+                fresh(
+                    generation,
+                    observation.running,
+                    observation.owner_generation,
+                )
+            })
+            .map(|observation| NativeSessionObservations {
                 generation,
                 observation,
             });
@@ -76,8 +128,8 @@ impl ManagedDriver {
                     .as_ref()
                     .and_then(|value| value.snapshot_progress())
             }),
-            snapshot.state.owner_generation,
-            snapshot.state.execution,
+            state.owner_generation,
+            state.execution,
         );
         // Absent endpoints surface as node faults: the stream runs silent and
         // the badge explains the silence. Recording on the refresh cadence
@@ -120,10 +172,10 @@ impl ManagedDriver {
         }
     }
     #[cfg(not(windows))]
-    pub(super) fn poll_observations(
+    pub(in crate::service::managed) fn poll_observations(
         &mut self,
         _c: &mut ServiceContext,
-        _snapshot: &host::ProjectSnapshot,
+        _state: &host::HostSnapshot,
         _generation: SessionGeneration,
     ) {
     }
@@ -172,6 +224,11 @@ impl ManagedDriver {
             // to a device buffer request when no explicit buffer is set.
             c.active_latency_profile = Some(owner.profile);
             c.active_audio_settings = Some(owner.audio_settings.clone());
+            c.active_transport_latency = Some(owner.transport_latency);
+            c.active_measured_process = owner
+                .measured_process
+                .as_ref()
+                .map(|profile| profile.summary().clone());
             if owner.started.is_none() {
                 log::info!(
                     target: "moiren::audio::service",
@@ -201,6 +258,8 @@ impl ManagedDriver {
             // its intent, but this owner's settled projection is gone.
             c.active_latency_profile = None;
             c.active_audio_settings = None;
+            c.active_transport_latency = None;
+            c.active_measured_process = None;
             c.graph.stopped();
         }
         if let UpdateState::Blocked { reason, .. } = &snapshot.state.update {

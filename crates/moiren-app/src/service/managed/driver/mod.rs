@@ -11,8 +11,44 @@ mod exports;
 mod observations;
 
 impl ServiceDriver for ManagedDriver {
-    fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
+    fn request(&mut self, c: &mut ServiceContext, pool: &mut JobPool, request: AppRequest) {
+        // Every later control request supersedes a pending window selection.
+        // The worker still owns its reserved completion and no audio resource.
+        #[cfg(windows)]
+        if !matches!(&request, AppRequest::RefreshCatalog) {
+            self.window_evaluation = None;
+        }
+        #[cfg(not(windows))]
+        let _ = &pool;
         match request {
+            AppRequest::CreateExport {
+                direction,
+                name,
+                channels,
+            } => {
+                match c
+                    .exports
+                    .allocate_export(&mut c.graph, direction, name, channels)
+                {
+                    Ok(()) if self.owner.is_some() => {
+                        self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
+                    }
+                    Ok(()) => {}
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
+            AppRequest::ApplyWindowedProcessBridge { request, policy } => {
+                #[cfg(windows)]
+                if let Err(error) = self.begin_windowed_process(c, pool, request, policy) {
+                    c.graph.record_error(error);
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (request, policy);
+                    c.graph
+                        .record_error("observed Process windows require Windows");
+                }
+            }
             AppRequest::SetExportAuthorizations(values) => {
                 let previous = c.exports.authorizations.clone();
                 if let Err(error) = c.exports.set_authorizations(&values) {
@@ -30,11 +66,8 @@ impl ServiceDriver for ManagedDriver {
                                     != c.exports.allow_default(intent.endpoint_id)
                         })
                     }) {
-                        self.apply_audio_settings
-                            .get_or_insert_with(|| c.audio_settings.clone());
-                        if let Ok(summary) = c.graph.managed_session_spec(c.core.desired()) {
-                            let _ = c.core.restart_managed_graph(summary);
-                        }
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        let _ = c.core.restart_managed_graph(None);
                         self.retire(c);
                         self.apply = true;
                     }
@@ -52,13 +85,39 @@ impl ServiceDriver for ManagedDriver {
                     self.edits.clear();
                     c.graph.clear_pending();
                     self.apply = false;
-                    self.apply_audio_settings = None;
+                    self.apply_settings = None;
                 }
                 Err(error) => c.graph.record_error(error),
             },
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
+            }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
+            }
+            AppRequest::ApplyMeasuredProcessBridge(request) => {
+                match self.select_measured_process(c, request) {
+                    Ok(()) => {
+                        self.cancel_startup_automation();
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(candidate) => {
+                match self.select_evaluated_process(c, &candidate) {
+                    Ok(()) => {
+                        self.cancel_startup_automation();
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::ScanPlugins { force } => self.plugin_scan.request(force),
@@ -80,18 +139,20 @@ impl ServiceDriver for ManagedDriver {
                     c.graph.record_error(error);
                 } else if c.core.managed_desired(spec).is_ok() {
                     c.audio_settings = settings;
-                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                    self.apply_settings = Some(ApplySettings::capture(c));
                     self.apply = true;
                 }
             }
             AppRequest::ApplyGraph => {
                 self.cancel_startup_automation();
                 self.auto_apply_deadline = None;
-                self.apply_audio_settings = Some(c.audio_settings.clone());
+                self.apply_settings = Some(ApplySettings::capture(c));
                 self.apply = true;
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    c.exports.clear_new_identities();
+                    c.measured_process = None;
                     self.exports_runtime.revoke();
                     self.document = self
                         .document
@@ -127,6 +188,12 @@ impl ServiceDriver for ManagedDriver {
                 let back = matches!(request, AppRequest::UndoGraph);
                 let stepped = if back { c.graph.undo() } else { c.graph.redo() };
                 if stepped {
+                    #[cfg(test)]
+                    // A test Stop is explicit user intent: undo restores the
+                    // candidate but must not resurrect the stopped session.
+                    if c.core.run_limit().is_none() {
+                        return;
+                    }
                     self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                 }
             }
@@ -164,6 +231,17 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::PauseRecording { node } => self.pause_recording(c, node),
             AppRequest::ResumeRecording { node } => self.resume_recording(c, node),
             AppRequest::StopRecording { node } => self.stop_recording(c, node),
+            #[cfg(any(test, feature = "vad-integration-probe"))]
+            AppRequest::Stop => {
+                c.measured_process = None;
+                self.automatic_startup = false;
+                self.automatic_resume = false;
+                self.apply = false;
+                self.apply_settings = None;
+                self.auto_apply_deadline = None;
+                let _ = c.core.stop();
+                self.retire(c);
+            }
         }
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
@@ -174,8 +252,8 @@ impl ServiceDriver for ManagedDriver {
             && deadline <= Instant::now()
         {
             self.auto_apply_deadline = None;
-            self.apply_audio_settings
-                .get_or_insert_with(|| c.audio_settings.clone());
+            self.apply_settings
+                .get_or_insert_with(|| ApplySettings::capture(c));
             self.apply = true;
         }
         if self.apply {
@@ -183,7 +261,9 @@ impl ServiceDriver for ManagedDriver {
         }
         if let Some(owner) = self.owner.as_ref() {
             let snapshot = owner.observer.read();
-            self.poll_observations(c, &snapshot, owner.generation);
+            self.poll_observations(c, &snapshot.state, owner.generation);
+            #[cfg(windows)]
+            self.poll_process_trace(c, &snapshot);
             self.poll_execution(c, &snapshot);
             self.poll_recording_rebinds(c, &snapshot);
             self.poll_edits(c);
@@ -191,7 +271,9 @@ impl ServiceDriver for ManagedDriver {
             self.pump_parameters(c, budget);
             self.finish_apply_confirmation(c, &snapshot);
             self.poll_meters(c);
+            self.poll_run_limit(c);
         }
+        self.publish_resume_notice(c);
         self.poll_exports(c, pool);
         // Recording workers finalize on their own threads; this folds their
         // statuses into the domain and queues terminal sessions for cleanup.
@@ -203,12 +285,17 @@ impl ServiceDriver for ManagedDriver {
         catalog::update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
+        #[cfg(windows)]
+        {
+            self.window_evaluation = None;
+        }
         self.exiting = true;
         self.apply = false;
-        self.apply_audio_settings = None;
+        self.apply_settings = None;
         self.auto_apply_deadline = None;
         self.retire(c);
     }
+
     fn is_drained(&self) -> bool {
         self.auto_apply_deadline.is_none()
             && self.owner.is_none()
@@ -225,6 +312,21 @@ impl ServiceDriver for ManagedDriver {
 }
 
 impl ManagedDriver {
+    /// Stop and retire the owner once the requested run limit elapsed.
+    fn poll_run_limit(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.owner.as_ref() else {
+            return;
+        };
+        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
+            && owner
+                .started
+                .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))
+        {
+            let _ = c.core.stop();
+            self.retire(c);
+            self.apply = false;
+        }
+    }
     /// Pump the meter surfaces from the owner's observer: the spectrum
     /// relay, then the level subscription registry.
     fn poll_meters(&mut self, c: &mut ServiceContext) {

@@ -1,3 +1,5 @@
+use moiren_app::service::{ExportDirection, ExportStatus};
+use moiren_engine::node::VirtualEndpointId;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -15,6 +17,14 @@ pub(super) struct Report {
     pub persisted_project_verified: bool,
     pub native_clients_started_by_probe: u32,
     pub pcm_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename: Option<Vec<super::rename::Case>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_streaming: Option<Vec<super::rename::stream::Case>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_fixture_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixture_source: Option<&'static str>,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
     pub soak_idle: Option<super::soak::IdleSoak>,
@@ -27,7 +37,11 @@ pub(super) struct Report {
     pub gate_transitions: Vec<super::validation::GateProgress>,
     pub service_joined: bool,
     pub control_session_released: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_cleanup: Option<OwnerCleanupEvidence>,
     pub endpoint_absence_confirmed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_capture: Option<InputCaptureExport>,
     pub checkpoints: Vec<Checkpoint>,
     pub error: Option<String>,
     pub cleanup_error: Option<String>,
@@ -46,6 +60,65 @@ pub(super) struct ProbeTrail {
     pub microphone_native_callbacks: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct OwnerCleanupEvidence {
+    pub generation: u64,
+    pub host_closed: bool,
+    pub fault: Option<String>,
+    pub error: Option<String>,
+}
+
+#[cfg(windows)]
+impl From<&moiren_app::service::SessionCleanupObservation> for OwnerCleanupEvidence {
+    fn from(observation: &moiren_app::service::SessionCleanupObservation) -> Self {
+        Self {
+            generation: observation.generation.0,
+            host_closed: observation.state.host == moiren_engine::host::HostState::Closed,
+            fault: observation
+                .state
+                .fault
+                .as_ref()
+                .map(|fault| format!("{fault:?}")),
+            error: observation
+                .state
+                .cleanup_error
+                .as_ref()
+                .map(ToString::to_string),
+        }
+    }
+}
+
+pub(super) fn exit_cleanup_error(
+    lifecycle_confirmed: bool,
+    expected_generation: Option<u64>,
+    owner: Option<&OwnerCleanupEvidence>,
+) -> Option<String> {
+    if !lifecycle_confirmed {
+        return Some(
+            "service exited, but public lifecycle evidence did not confirm removal requested/closed gates".into(),
+        );
+    }
+    let expected = expected_generation?;
+    let Some(owner) = owner else {
+        return Some(format!(
+            "missing cleanup for audio owner generation {expected}"
+        ));
+    };
+    if owner.generation != expected {
+        return Some(format!(
+            "audio owner cleanup generation {} differs from confirmed generation {expected}",
+            owner.generation,
+        ));
+    }
+    if !owner.host_closed || owner.fault.is_some() || owner.error.is_some() {
+        return Some(format!(
+            "audio owner cleanup failed for generation {expected}, host_closed={}, fault={:?}, error={:?}",
+            owner.host_closed, owner.fault, owner.error,
+        ));
+    }
+    None
+}
+
 impl Default for Report {
     fn default() -> Self {
         Self {
@@ -56,6 +129,10 @@ impl Default for Report {
             persisted_project_verified: false,
             native_clients_started_by_probe: 0,
             pcm_verified: false,
+            rename: None,
+            rename_streaming: None,
+            rename_fixture_seed: None,
+            fixture_source: None,
             idle_hold: None,
             pcm: None,
             soak_idle: None,
@@ -68,7 +145,9 @@ impl Default for Report {
             gate_transitions: Vec::new(),
             service_joined: false,
             control_session_released: false,
+            owner_cleanup: None,
             endpoint_absence_confirmed: false,
+            input_capture: None,
             checkpoints: Vec::new(),
             error: None,
             cleanup_error: None,
@@ -80,6 +159,15 @@ impl Default for Report {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct InputCaptureExport {
+    pub requested_frames: u32,
+    pub raw_file: &'static str,
+    pub metadata_file: &'static str,
+    pub exported: bool,
+    pub error: Option<String>,
 }
 
 impl Report {
@@ -113,6 +201,10 @@ pub(super) struct IdleHoldEvidence {
 pub(super) struct PcmEvidence {
     #[cfg(windows)]
     pub identity: Option<super::native::IdentityEvidence>,
+    #[cfg(windows)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_publication: Option<super::publication::PublicationEvidence>,
+    pub native_enumeration_failure: Option<Vec<super::rename::enumeration::Failure>>,
     pub source: [f32; 2],
     pub expected_after_gain: [f32; 2],
     pub second_source: [f32; 2],
@@ -129,6 +221,7 @@ pub(super) struct PcmEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct ExportEvidence {
     pub endpoint_id: String,
+    pub direction: ExportDirection,
     pub present: bool,
     pub enabled: bool,
     pub bound: bool,
@@ -137,12 +230,56 @@ pub(super) struct ExportEvidence {
     pub gate_open: bool,
     pub active_revision: Option<u64>,
     pub native_stamp: Option<[u64; 5]>,
+    pub windows_name: Option<WindowsNameObservation>,
     pub resource: String,
+}
+
+/// Detached service evidence only; never grants native readiness or ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct WindowsNameObservation {
+    pub native_identity: [u64; 3],
+    pub observed_qpc_100ns: Option<u64>,
+    pub device_state: Option<u32>,
+    pub device_state_error: Option<String>,
+    pub mmdevice_id: Option<String>,
+    pub name: Option<String>,
+    pub error: Option<String>,
+}
+
+impl From<&ExportStatus> for ExportEvidence {
+    fn from(export: &ExportStatus) -> Self {
+        Self {
+            endpoint_id: export.intent.endpoint_id.to_string(),
+            direction: export.intent.direction,
+            present: export.resource == moiren_app::service::ExportResourceState::Present,
+            enabled: export.intent.enabled,
+            bound: export.intent.binding.is_some(),
+            channels: export.intent.channels,
+            allow_default: export.allow_default,
+            gate_open: export.gate_open,
+            active_revision: export.active_revision,
+            native_stamp: export.native_stamp,
+            windows_name: export
+                .windows_name
+                .as_ref()
+                .map(|observation| WindowsNameObservation {
+                    native_identity: observation.native_identity,
+                    observed_qpc_100ns: observation.observed_qpc_100ns,
+                    device_state: observation.device_state,
+                    device_state_error: observation.device_state_error.clone(),
+                    mmdevice_id: observation.mmdevice_id.clone(),
+                    name: observation.name.clone(),
+                    error: observation.error.clone(),
+                }),
+            resource: format!("{:?}", export.resource).to_ascii_lowercase(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct Evidence {
     pub phase: String,
+    pub generation: u64,
     pub candidate_revision: u64,
     pub active_revision: Option<u64>,
     pub pending_revision: Option<u64>,
@@ -153,6 +290,50 @@ pub(super) struct Evidence {
 }
 
 impl Evidence {
+    pub fn fixture_session(&self) -> Option<u64> {
+        let [first, second] = self.exports.as_slice() else {
+            return None;
+        };
+        let identity = |export: &ExportEvidence| {
+            let [runtime, session, generation, ..] = export.native_stamp?;
+            (runtime != 0 && session != 0 && runtime == generation).then_some((runtime, session))
+        };
+        let (first_runtime, first_session) = identity(first)?;
+        let (second_runtime, second_session) = identity(second)?;
+        (first_runtime != second_runtime && first_session == second_session)
+            .then_some(first_session)
+    }
+
+    pub fn established_fixture(&self, request: u64) -> Option<[VirtualEndpointId; 2]> {
+        if self.phase != "idle"
+            || self.active_revision.is_some()
+            || self.pending_revision.is_some()
+            || self.consumed_request_id < request
+            || self.error.is_some()
+            || self.graph_error.is_some()
+        {
+            return None;
+        }
+        self.fixture_session()?;
+        let created = |direction| {
+            let export = self.exports.iter().find(|export| {
+                export.direction == direction
+                    && export.present
+                    && export.enabled
+                    && !export.bound
+                    && export.channels == 2
+                    && !export.allow_default
+                    && !export.gate_open
+                    && export.active_revision.is_none()
+            })?;
+            let id: VirtualEndpointId = export.endpoint_id.parse().ok()?;
+            (id.to_bytes() != [0; 16]).then_some(id)
+        };
+        let playback = created(ExportDirection::Playback)?;
+        let microphone = created(ExportDirection::Microphone)?;
+        (playback != microphone).then_some([playback, microphone])
+    }
+
     pub fn running(&self, ids: &[String; 2], request: u64) -> bool {
         self.owner_running(ids, request) && self.gates_open()
     }
@@ -175,10 +356,25 @@ impl Evidence {
         !self.exports.is_empty() && self.exports.iter().all(|export| export.gate_open)
     }
 
+    pub fn stopped(&self, ids: &[String; 2], request: u64) -> bool {
+        self.phase == "idle"
+            && self.active_revision.is_none()
+            && self.pending_revision.is_none()
+            && self.consumed_request_id >= request
+            && self.error.is_none()
+            && self.graph_error.is_none()
+            && self.exact_exports(ids)
+            && self.exports.iter().all(|export| {
+                export.present && !export.gate_open && export.active_revision.is_none()
+            })
+    }
+
     pub fn exited(&self) -> bool {
         self.phase == "exited"
             && self.active_revision.is_none()
             && self.pending_revision.is_none()
+            && self.error.is_none()
+            && self.graph_error.is_none()
             && self.exports.iter().all(|export| {
                 !export.gate_open
                     && export.active_revision.is_none()
@@ -206,26 +402,12 @@ impl From<&moiren_app::service::AppSnapshot> for Evidence {
     fn from(snapshot: &moiren_app::service::AppSnapshot) -> Self {
         Self {
             phase: format!("{:?}", snapshot.phase).to_ascii_lowercase(),
+            generation: snapshot.generation.0,
             candidate_revision: snapshot.graph.candidate_revision,
             active_revision: snapshot.graph.active_revision,
             pending_revision: snapshot.graph.pending_revision,
             consumed_request_id: snapshot.consumed_request_id.0,
-            exports: snapshot
-                .exports
-                .iter()
-                .map(|export| ExportEvidence {
-                    endpoint_id: export.intent.endpoint_id.to_string(),
-                    present: export.resource == moiren_app::service::ExportResourceState::Present,
-                    enabled: export.intent.enabled,
-                    bound: export.intent.binding.is_some(),
-                    channels: export.intent.channels,
-                    allow_default: export.allow_default,
-                    gate_open: export.gate_open,
-                    active_revision: export.active_revision,
-                    native_stamp: export.native_stamp,
-                    resource: format!("{:?}", export.resource).to_ascii_lowercase(),
-                })
-                .collect(),
+            exports: snapshot.exports.iter().map(ExportEvidence::from).collect(),
             error: snapshot.error.clone(),
             graph_error: snapshot.graph.last_error.clone(),
         }
@@ -243,14 +425,17 @@ mod tests {
     fn running() -> Evidence {
         Evidence {
             phase: "running".into(),
+            generation: 1,
             candidate_revision: 7,
             active_revision: Some(7),
             pending_revision: None,
             consumed_request_id: 2,
             exports: ids()
                 .into_iter()
-                .map(|endpoint_id| ExportEvidence {
+                .zip([ExportDirection::Playback, ExportDirection::Microphone])
+                .map(|(endpoint_id, direction)| ExportEvidence {
                     endpoint_id,
+                    direction,
                     present: true,
                     enabled: true,
                     bound: true,
@@ -259,11 +444,54 @@ mod tests {
                     gate_open: true,
                     active_revision: Some(7),
                     native_stamp: Some([31, 42, 31, 0, 1]),
+                    windows_name: None,
                     resource: "present".into(),
                 })
                 .collect(),
             error: None,
             graph_error: None,
+        }
+    }
+
+    #[test]
+    fn fresh_fixture_uses_only_the_two_prepared_unbound_exports_from_one_session() {
+        let playback = VirtualEndpointId::from_bytes([1; 16]);
+        let microphone = VirtualEndpointId::from_bytes([2; 16]);
+        let mut evidence = running();
+        evidence.phase = "idle".into();
+        evidence.active_revision = None;
+        for ((export, id), runtime) in evidence
+            .exports
+            .iter_mut()
+            .zip([playback, microphone])
+            .zip([31, 32])
+        {
+            export.endpoint_id = id.to_string();
+            export.bound = false;
+            export.gate_open = false;
+            export.active_revision = None;
+            export.native_stamp = Some([runtime, 42, runtime, 0, 1]);
+        }
+        evidence.exports.reverse();
+        assert_eq!(evidence.fixture_session(), Some(42));
+        assert_eq!(
+            evidence.established_fixture(2),
+            Some([playback, microphone])
+        );
+        assert!(evidence.established_fixture(3).is_none());
+        for change in [
+            |e: &mut Evidence| e.exports[0].native_stamp = Some([32, 99, 32, 0, 1]),
+            |e: &mut Evidence| e.exports[0].native_stamp = e.exports[1].native_stamp,
+            |e: &mut Evidence| e.exports[0].native_stamp = None,
+            |e: &mut Evidence| e.exports[0].gate_open = true,
+            |e: &mut Evidence| e.exports[0].present = false,
+            |e: &mut Evidence| e.exports[0].bound = true,
+            |e: &mut Evidence| e.exports[0].allow_default = true,
+            |e: &mut Evidence| e.exports[0].endpoint_id = e.exports[1].endpoint_id.clone(),
+        ] {
+            let mut invalid = evidence.clone();
+            change(&mut invalid);
+            assert!(invalid.established_fixture(2).is_none());
         }
     }
 
@@ -303,6 +531,24 @@ mod tests {
     }
 
     #[test]
+    fn stop_requires_acknowledged_idle_closed_gates_and_retained_endpoints() {
+        let mut stopped = running();
+        stopped.phase = "idle".into();
+        stopped.active_revision = None;
+        for export in &mut stopped.exports {
+            export.gate_open = false;
+            export.active_revision = None;
+        }
+        assert!(stopped.stopped(&ids(), 2));
+        assert!(!stopped.stopped(&ids(), 3));
+        let mut missing = stopped.clone();
+        missing.exports[0].present = false;
+        assert!(!missing.stopped(&ids(), 2));
+        stopped.exports[1].gate_open = true;
+        assert!(!stopped.stopped(&ids(), 2));
+    }
+
+    #[test]
     fn exit_accepts_removing_without_claiming_confirmed_pdo_absence() {
         let mut exited = running();
         exited.phase = "exited".into();
@@ -322,6 +568,52 @@ mod tests {
     }
 
     #[test]
+    fn exit_rejects_explicit_service_or_graph_cleanup_errors() {
+        for graph_error in [false, true] {
+            let mut exited = running();
+            exited.phase = "exited".into();
+            exited.active_revision = None;
+            for export in &mut exited.exports {
+                export.present = false;
+                export.resource = "removing".into();
+                export.gate_open = false;
+                export.active_revision = None;
+            }
+            assert!(exited.exited());
+            if graph_error {
+                exited.graph_error = Some("shutdown REMOVE timeout".into());
+            } else {
+                exited.error = Some("shutdown service failure".into());
+            }
+            assert!(!exited.exited(), "cleanup error was reported as clean exit");
+        }
+    }
+
+    #[test]
+    fn continuous_exit_requires_cleanup_of_the_confirmed_owner() {
+        let mut owner = OwnerCleanupEvidence {
+            generation: 5,
+            host_closed: true,
+            fault: None,
+            error: None,
+        };
+        assert!(exit_cleanup_error(true, None, None).is_none());
+        assert!(exit_cleanup_error(false, Some(5), Some(&owner)).is_some());
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_none());
+        assert!(exit_cleanup_error(true, Some(5), None).is_some());
+        assert!(exit_cleanup_error(true, Some(7), Some(&owner)).is_some());
+        owner.host_closed = false;
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_some());
+        owner.host_closed = true;
+        owner.fault = Some("native owner failure".into());
+        assert!(exit_cleanup_error(true, Some(5), Some(&owner)).is_some());
+        owner.fault = None;
+        owner.error = Some("PCM shutdown HRESULT=0x8007051A".into());
+        let error = exit_cleanup_error(true, Some(5), Some(&owner)).unwrap();
+        assert!(error.contains("0x8007051A"), "{error}");
+    }
+
+    #[test]
     fn stage1_report_never_promotes_service_running_to_pcm_or_pdo_proof() {
         let json = serde_json::to_value(Report::default()).unwrap();
         assert_eq!(json["status"], "failed");
@@ -329,6 +621,191 @@ mod tests {
         assert_eq!(json["pcm_verified"], false);
         assert_eq!(json["service_joined"], false);
         assert_eq!(json["control_session_released"], false);
+        assert_eq!(json["endpoint_absence_confirmed"], false);
+    }
+
+    #[test]
+    fn export_report_retains_direction_and_explicit_unknown_windows_name() {
+        let json = serde_json::to_value(running()).unwrap();
+        assert_eq!(json["exports"][0]["direction"], "playback");
+        assert_eq!(json["exports"][1]["direction"], "microphone");
+        for export in json["exports"].as_array().unwrap() {
+            assert_eq!(export.get("windows_name"), Some(&serde_json::Value::Null));
+        }
+    }
+
+    fn export_status() -> ExportStatus {
+        let document = super::super::project::document().unwrap();
+        let export = &document.exports[0];
+        ExportStatus {
+            intent: moiren_app::service::ExportIntent {
+                endpoint_id: export.endpoint_id,
+                direction: export.direction,
+                name: export.name.clone(),
+                channels: export.channels,
+                enabled: export.enabled,
+                binding: Some(
+                    moiren_core::graph::LogicalGraph::new()
+                        .create_node(moiren_core::graph::NodeKind::Source, 2)
+                        .unwrap(),
+                ),
+            },
+            actual_name: Some("provider name must not replace Windows readback".into()),
+            windows_name: Some(moiren_app::service::WindowsEndpointNameObservation {
+                native_identity: [31, 42, 31],
+                observed_qpc_100ns: Some(123_456),
+                device_state: None,
+                device_state_error: None,
+                mmdevice_id: Some("{exact-owned-render-id}".into()),
+                name: Some("Actual Windows name".into()),
+                error: None,
+            }),
+            rename_pending: false,
+            resource: moiren_app::service::ExportResourceState::Present,
+            allow_default: false,
+            gate_open: true,
+            active_revision: Some(7),
+            #[cfg(windows)]
+            diagnostics: None,
+            native_stamp: Some([31, 42, 31, 0, 1]),
+            observation_generation: Some(9),
+            native_retirement: None,
+        }
+    }
+
+    #[test]
+    fn service_export_projects_exact_typed_windows_name() {
+        let evidence = ExportEvidence::from(&export_status());
+        let json = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(json["direction"], "playback");
+        assert_eq!(
+            json["windows_name"],
+            serde_json::json!({
+                "native_identity": [31, 42, 31],
+                "observed_qpc_100ns": 123456,
+                "device_state": null,
+                "device_state_error": null,
+                "mmdevice_id": "{exact-owned-render-id}",
+                "name": "Actual Windows name",
+                "error": null,
+            })
+        );
+        assert_eq!(json["native_stamp"], serde_json::json!([31, 42, 31, 0, 1]));
+    }
+
+    #[test]
+    fn stale_missing_and_failed_windows_names_are_raw_evidence_not_readiness() {
+        for change in 0..7 {
+            let mut status = export_status();
+            match change {
+                0 => status.windows_name = None,
+                1 => status.windows_name.as_mut().unwrap().native_identity[0] += 1,
+                2 => status.windows_name.as_mut().unwrap().native_identity[1] += 1,
+                3 => status.windows_name.as_mut().unwrap().native_identity[2] += 1,
+                4 => status.windows_name.as_mut().unwrap().mmdevice_id = None,
+                5 => status.windows_name.as_mut().unwrap().mmdevice_id = Some(String::new()),
+                _ => status.windows_name.as_mut().unwrap().error = Some("topology failed".into()),
+            }
+            let mut evidence = running();
+            let mut projected = ExportEvidence::from(&status);
+            projected.endpoint_id = ids()[0].clone();
+            evidence.exports[0] = projected;
+            assert!(
+                evidence.running(&ids(), 2),
+                "readiness changed for {change}"
+            );
+            let json = serde_json::to_value(&evidence).unwrap();
+            let expected = status.windows_name.as_ref().map(|name| {
+                serde_json::json!({
+                    "native_identity": name.native_identity,
+                    "observed_qpc_100ns": name.observed_qpc_100ns,
+                    "device_state": name.device_state,
+                    "device_state_error": name.device_state_error,
+                    "mmdevice_id": name.mmdevice_id,
+                    "name": name.name,
+                    "error": name.error,
+                })
+            });
+            assert_eq!(
+                json["exports"][0]["windows_name"],
+                expected.unwrap_or(serde_json::Value::Null),
+                "lost raw observation for {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_state_report_is_raw_detached_evidence_not_readiness() {
+        for state in [None, Some(1), Some(2), Some(3), Some(0x80000000)] {
+            let mut status = export_status();
+            let name = status.windows_name.as_mut().unwrap();
+            name.device_state = state;
+            name.device_state_error = state.is_none().then(|| "GetState failed".into());
+            let export = ExportEvidence::from(&status);
+            let json = serde_json::to_value(&export).unwrap();
+            assert_eq!(
+                json["windows_name"]["device_state"],
+                serde_json::json!(state)
+            );
+            assert!(json["windows_name"].get("device_state_error").is_some());
+            assert_eq!(json["windows_name"]["name"], "Actual Windows name");
+            let mut evidence = running();
+            let mut export = export;
+            export.endpoint_id = ids()[0].clone();
+            evidence.exports[0] = export;
+            assert!(evidence.running(&ids(), 2));
+        }
+    }
+
+    #[test]
+    fn progress_retains_typed_windows_name_without_adding_qualification() {
+        let directory = std::env::temp_dir().join(format!(
+            "moiren-holder-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let mut report = Report::default();
+        let mut evidence = running();
+        evidence.exports[0] = ExportEvidence::from(&export_status());
+        report.checkpoint("no_clients_timeline_hold", evidence);
+        super::super::progress::persist(&directory, &report, 1, 20, 30, false).unwrap();
+        let bytes = std::fs::read(directory.join("progress.json")).unwrap();
+        std::fs::remove_file(directory.join("progress.json")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let export = &json["report"]["checkpoints"][0]["evidence"]["exports"][0];
+        assert_eq!(export["direction"], "playback");
+        assert_eq!(
+            export["windows_name"]["native_identity"],
+            serde_json::json!([31, 42, 31])
+        );
+        assert_eq!(
+            export["windows_name"]["mmdevice_id"],
+            "{exact-owned-render-id}"
+        );
+        assert_eq!(export["windows_name"]["error"], serde_json::Value::Null);
+        assert_eq!(json["final_qualification"], false);
+        assert_eq!(json["report"]["native_clients_started_by_probe"], 0);
+        assert_eq!(json["report"]["pcm_verified"], false);
+    }
+
+    #[test]
+    fn rename_fixture_seed_is_traceable_without_changing_default_report() {
+        let default = serde_json::to_value(Report::default()).unwrap();
+        assert!(default.get("rename_fixture_seed").is_none());
+        let seed = u64::MAX;
+        let report = Report {
+            rename_fixture_seed: Some(seed),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["rename_fixture_seed"].as_u64(), Some(seed));
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["persisted_project_verified"], false);
         assert_eq!(json["endpoint_absence_confirmed"], false);
     }
 
@@ -341,4 +818,19 @@ mod tests {
         }
         assert_eq!(report.checkpoints.len(), 2);
     }
+}
+#[test]
+fn pcm_enumeration_metadata_does_not_imply_native_start_or_pcm_success() {
+    let report = Report {
+        pcm: Some(PcmEvidence::default()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(
+        json["pcm"].get("native_enumeration_failure"),
+        Some(&serde_json::Value::Null)
+    );
+    assert_eq!(json["native_clients_started_by_probe"], 0);
+    assert_eq!(json["pcm_verified"], false);
+    assert_eq!(json["status"], "failed");
 }

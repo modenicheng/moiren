@@ -12,9 +12,25 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     // duration stays out of it entirely (graph-page keys must stay 1 Hz-free).
     graph.recording = c.recordings.cards();
     AppSnapshot {
+        measured_process: c
+            .measured_process
+            .as_ref()
+            .map(|profile| profile.summary().clone()),
+        active_measured_process: c
+            .active_measured_process
+            .clone()
+            .filter(|_| c.fresh(c.core.generation())),
+        last_cleanup: c.last_cleanup.clone(),
+        #[cfg(windows)]
+        process_trace_status: c.process_trace_status.clone(),
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
+        #[cfg(windows)]
+        native_observations: c
+            .native_observations
+            .clone()
+            .filter(|value| c.fresh(value.generation)),
         #[cfg(windows)]
         professional_observations: c
             .professional_observations
@@ -26,6 +42,10 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         active_audio_settings: c
             .active_audio_settings
             .clone()
+            .filter(|_| c.fresh(c.core.generation())),
+        transport_latency: c.transport_latency,
+        active_transport_latency: c
+            .active_transport_latency
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
         consumed_request_id: RequestId::default(),
@@ -117,6 +137,39 @@ pub(crate) fn small_snapshot_inputs_match(c: &ServiceContext, last: &AppSnapshot
             .filter(|_| c.fresh(c.core.generation()));
         last.active_audio_settings.as_ref() == projected
     };
+    // Native diagnostics, measured Process state, and cleanup evidence are
+    // cheap PartialEq projections. Compare them directly so callback-only or
+    // refusal-only changes cannot be hidden by an otherwise idle token.
+    let native_same = {
+        #[cfg(windows)]
+        {
+            let projected = c
+                .native_observations
+                .as_ref()
+                .filter(|value| c.fresh(value.generation));
+            last.native_observations.as_ref() == projected
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    };
+    let trace_same = {
+        #[cfg(windows)]
+        {
+            last.process_trace_status == c.process_trace_status
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    };
+    let transport_same = last.transport_latency == c.transport_latency
+        && last.active_transport_latency == c.active_transport_latency;
+    let measured_same = last.measured_process.as_ref()
+        == c.measured_process.as_ref().map(|profile| profile.summary())
+        && last.active_measured_process == c.active_measured_process;
+    let cleanup_same = last.last_cleanup == c.last_cleanup;
     loaded_project_same
         && observations_same
         && active_settings_same
@@ -128,8 +181,12 @@ pub(crate) fn small_snapshot_inputs_match(c: &ServiceContext, last: &AppSnapshot
         && last.starting_progress == c.starting_progress
         && last.signal_topics == c.signals.topics
         && last.tone_session == c.tone_session
+        && native_same
+        && trace_same
+        && transport_same
+        && measured_same
+        && cleanup_same
 }
-
 #[cfg(test)]
 #[path = "publish_tests.rs"]
 mod snapshot_publish_tests;

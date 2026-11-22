@@ -4,6 +4,7 @@ mod allocation;
 mod automation;
 #[path = "../common/mod.rs"]
 mod common;
+mod execution;
 mod graph;
 mod io;
 // Loads a native cdylib fixture; incompatible with Miri's process model.

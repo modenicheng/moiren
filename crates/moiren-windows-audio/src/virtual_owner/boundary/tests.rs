@@ -19,12 +19,75 @@ pub(super) fn before_transfer_return() {
     }
 }
 
-fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
+pub(super) fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
     BEFORE_RETURN.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
             epoch.fetch_add(1, Ordering::AcqRel);
         }))
     });
+}
+
+#[test]
+fn playback_event_classes_check_overflow_and_never_publish_unknown_as_zero() {
+    let probe = BoundaryProbe::default();
+    assert_eq!(probe.snapshot().playback_events, None);
+    probe.observe_playback_events(u64::MAX, 7, 9, false);
+    probe.observe_playback_events(1, 2, 3, true);
+    let events = probe.snapshot().playback_events.unwrap();
+    assert_eq!(events.initial_prime_muted_frames, u64::MAX);
+    assert_eq!(events.recovery_prime_muted_frames, 9);
+    assert_eq!(events.short_read_callbacks, 12);
+    assert!(events.saturated);
+    assert!(events.initial_prime_complete);
+    probe.playback_events_version.store(5, Ordering::SeqCst);
+    assert_eq!(
+        probe.snapshot().playback_events,
+        None,
+        "in-flight publication is unknown"
+    );
+    probe
+        .playback_events_version
+        .store(u64::MAX - 1, Ordering::SeqCst);
+    probe.observe_playback_events(0, 0, 0, true);
+    assert_eq!(
+        probe.snapshot().playback_events,
+        None,
+        "version exhaustion cannot alias an old snapshot"
+    );
+}
+
+#[test]
+fn playback_event_classes_concurrent_samples_are_coherent_or_unknown() {
+    let probe = Arc::new(BoundaryProbe::default());
+    let writer = probe.clone();
+    let thread = std::thread::spawn(move || {
+        for index in 0..10_000 {
+            writer.observe_playback_events(1, 2, 3, index == 9_999);
+        }
+    });
+    while !thread.is_finished() {
+        if let Some(events) = probe.snapshot().playback_events {
+            assert_eq!(
+                events.recovery_prime_muted_frames,
+                events.initial_prime_muted_frames * 2
+            );
+            assert_eq!(
+                events.short_read_callbacks,
+                events.initial_prime_muted_frames * 3
+            );
+            assert!(!events.saturated);
+            assert_eq!(
+                events.initial_prime_complete,
+                events.initial_prime_muted_frames == 10_000
+            );
+        }
+    }
+    thread.join().unwrap();
+    let final_events = probe.snapshot().playback_events.unwrap();
+    assert_eq!(final_events.initial_prime_muted_frames, 10_000);
+    assert_eq!(final_events.recovery_prime_muted_frames, 20_000);
+    assert_eq!(final_events.short_read_callbacks, 30_000);
+    assert!(final_events.initial_prime_complete);
 }
 
 fn render_through_boundaries(
@@ -381,6 +444,7 @@ fn drift_reuses_the_existing_ring_and_idle_callbacks_remain_bounded() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let ctx = ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames: 128,
@@ -471,6 +535,7 @@ fn drift_trace<S: ProcessingSample>(rate: u32, channels: usize, ppm: i64) {
     // exhaust this ring's reserved headroom. No wall-clock sleeping.
     for block in 0..10_000 {
         let context = ProcessContext {
+            execution: None,
             timeline_epoch: 1,
             timeline_start: (block * BLOCK) as u64,
             frames: BLOCK,
@@ -665,6 +730,7 @@ fn reset_racing_graph_read_silences_the_entire_output_block() {
                 };
                 let report = source.read(
                     &ProcessContext {
+                        execution: None,
                         timeline_epoch: 1,
                         timeline_start: 0,
                         frames: 128,
@@ -724,6 +790,7 @@ fn microphone_late_write_is_fenced_until_the_consumer_discards_it() {
                 };
                 let report = sink.write(
                     &ProcessContext {
+                        execution: None,
                         timeline_epoch: 1,
                         timeline_start: 0,
                         frames: 128,
@@ -852,6 +919,7 @@ fn microphone_backpressure_drops_new_without_requesting_a_reset(drift: bool, fre
         })
         .unwrap();
     let context = ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: 0,
         frames: BLOCK,
@@ -1012,6 +1080,7 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let context = |block: usize| ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: (block * BLOCK) as u64,
         frames: BLOCK,
@@ -1163,6 +1232,7 @@ fn microphone_probe_reports_occupancy_and_overflow() {
         .prepare_io(&[PortAccess::Read { port: 0, slot }])
         .unwrap();
     let context = |block: usize| ProcessContext {
+        execution: None,
         timeline_epoch: 1,
         timeline_start: (block * BLOCK) as u64,
         frames: BLOCK,

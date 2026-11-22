@@ -709,7 +709,7 @@ fn every_t_literal_key_exists_in_the_zh_cn_catalog() {
 ///
 /// When one of these keys gains a literal call site, remove it here — the
 /// guard fails on stale entries on purpose.
-const DYNAMIC_KEY_EXCEPTIONS: [&str; 135] = [
+const DYNAMIC_KEY_EXCEPTIONS: [&str; 133] = [
     // AudioConfigError Display strings looked up at paint from the enum payload
     // (UiFailure::InvalidAudioSettings); mirrored in tests/i18n_ledger.rs
     // ALLOWED_RUNTIME_KEYS.
@@ -742,7 +742,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 135] = [
     "Choose an output device at the top of the channel, or delete the channel",
     "Choose another device, or check the sample rate/precision settings",
     "Close window",
-    "Compatible",
     "Compressor parameters are outside their valid range",
     "Compressor parameters only apply to Compressor nodes",
     "DESTINATIONS",
@@ -788,7 +787,6 @@ const DYNAMIC_KEY_EXCEPTIONS: [&str; 135] = [
     "PROCESSING",
     "Parameters are outside their valid range",
     "Peak and RMS observation",
-    "Physical input",
     "Prepared sine-wave source",
     "Process loopback source",
     "Project node states do not match the topology identity",

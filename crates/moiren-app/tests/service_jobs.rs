@@ -117,6 +117,7 @@ fn spec() -> SessionSpec {
         output_endpoint_id: "output".into(),
         gain: 0.05,
         pan: 0.,
+        limit: RunLimit::UntilStopped,
         max_block_frames: 256,
     }
 }

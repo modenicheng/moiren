@@ -15,23 +15,87 @@ pub struct ExportSpec {
 pub struct ExportView {
     pub spec: ExportSpec,
     pub snapshot: Option<super::super::EndpointSnapshot>,
+    pub removed_via_query: bool,
     pub removing: bool,
     pub error: Option<String>,
     pub transport_prepared: bool,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
 pub(super) struct EndpointRecord {
     pub spec: ExportSpec,
+    publication_mode: Option<super::super::PublicationMode>,
     pub snapshot: Option<super::super::EndpointSnapshot>,
+    removed_query_stamp: Option<[u64; 5]>,
     pub removing: bool,
     // The driver revokes before the ACX call. A queried Removing state cannot
     // replace the successful REMOVE acknowledgment needed to set this flag.
     removal_accepted: bool,
     pub sessions: Vec<Arc<SessionState>>,
     pub error: Option<String>,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
+}
+
+impl EndpointRecord {
+    fn accept_query(
+        &mut self,
+        result: Result<super::super::EndpointSnapshot, BackendError>,
+    ) -> Option<super::super::EndpointSnapshot> {
+        match result {
+            Ok(snapshot) => {
+                self.snapshot = Some(snapshot);
+                self.removed_query_stamp =
+                    (snapshot.state() == PdoState::Removed).then(|| stamp(snapshot));
+                self.diagnostic_provenance = VadExportDiagnosticProvenance::Fresh;
+                self.error = ((snapshot.last_status() as i32) < 0).then(|| {
+                    format!(
+                        "VAD endpoint preparation failed: {:#x}",
+                        snapshot.last_status()
+                    )
+                });
+                Some(snapshot)
+            }
+            Err(error) => {
+                self.diagnostic_provenance = VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+                self.error = Some(error.to_string());
+                for session in &self.sessions {
+                    session.revoke();
+                }
+                None
+            }
+        }
+    }
+
+    pub(super) fn reap_sessions(&mut self) {
+        self.sessions.retain(|session| {
+            // Acquire completion BEFORE copying relaxed counters. If the
+            // worker finishes during that copy, retain it for another poll
+            // instead of discarding its final writes with an older snapshot.
+            let drained = session.drained.load(Ordering::Acquire);
+            self.telemetry = Some(session.telemetry_snapshot());
+            !drained
+        });
+    }
 }
 
 pub(super) trait EndpointControl {
+    /// Non-creating capability negotiation; failure owns no endpoint.
+    fn preflight_identity(&mut self) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported(
+            "immutable publication identity is unavailable".into(),
+        ))
+    }
+    fn create_identity(
+        &mut self,
+        _spec: &ExportSpec,
+        _mode: super::super::PublicationMode,
+    ) -> Result<Option<super::super::EndpointSnapshot>, BackendError> {
+        Err(BackendError::Unsupported(
+            "immutable publication identity is unavailable".into(),
+        ))
+    }
     /// None is a validated no-resource deferral, never an uncertain IO failure.
     fn create(
         &mut self,
@@ -53,6 +117,27 @@ pub(super) trait EndpointControl {
 }
 
 impl EndpointControl for ControlClient {
+    fn preflight_identity(&mut self) -> Result<(), BackendError> {
+        self.require_publication_identity().map_err(client_error)
+    }
+    fn create_identity(
+        &mut self,
+        spec: &ExportSpec,
+        mode: super::super::PublicationMode,
+    ) -> Result<Option<super::super::EndpointSnapshot>, BackendError> {
+        match self.create_identity(
+            StableEndpointId::from_virtual_endpoint_id(spec.id),
+            spec.intent,
+            spec.channels,
+            &spec.name,
+            spec.allow_default,
+            mode,
+        ) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(ClientError::CreateDeferred) => Ok(None),
+            Err(error) => Err(client_error(error)),
+        }
+    }
     fn create(
         &mut self,
         spec: &ExportSpec,
@@ -126,28 +211,74 @@ impl<C: EndpointControl> Lifecycle<C> {
     }
 
     pub fn create(&mut self, spec: ExportSpec) -> Result<(), BackendError> {
+        self.create_with_mode(spec, None)
+    }
+
+    pub fn create_identity(
+        &mut self,
+        spec: ExportSpec,
+        mode: super::super::PublicationMode,
+    ) -> Result<(), BackendError> {
+        self.create_with_mode(spec, Some(mode))
+    }
+
+    fn create_with_mode(
+        &mut self,
+        spec: ExportSpec,
+        mode: Option<super::super::PublicationMode>,
+    ) -> Result<(), BackendError> {
         // A local encoding failure never dispatched CREATE and must not strand
         // an unknown ownership record. Once IO starts, failures stay tracked.
-        super::super::create_request(
-            StableEndpointId::from_virtual_endpoint_id(spec.id),
-            spec.intent,
-            spec.channels,
-            &spec.name,
-            spec.allow_default,
-        )
-        .map_err(|error| client_error(error.into()))?;
-        if let Some(record) = self.endpoints.get(&spec.id)
+        if let Some(mode) = mode {
+            super::super::create_identity_request(
+                StableEndpointId::from_virtual_endpoint_id(spec.id),
+                spec.intent,
+                spec.channels,
+                &spec.name,
+                spec.allow_default,
+                mode,
+            )
+            .map_err(|error| client_error(error.into()))?;
+        } else {
+            super::super::create_request(
+                StableEndpointId::from_virtual_endpoint_id(spec.id),
+                spec.intent,
+                spec.channels,
+                &spec.name,
+                spec.allow_default,
+            )
+            .map_err(|error| client_error(error.into()))?;
+        }
+        if let Some(record) = self.endpoints.get_mut(&spec.id)
             && record
                 .snapshot
                 .is_none_or(|s| s.state() != PdoState::Removed)
         {
-            return if record.spec == spec && !record.removing && record.error.is_none() {
-                Ok(())
-            } else {
-                Err(unavailable(
+            if record.spec != spec || record.removing || record.error.is_some() {
+                return Err(unavailable(
                     "export recreation requires confirmed retirement",
-                ))
-            };
+                ));
+            }
+            if record.publication_mode == mode {
+                return Ok(());
+            }
+            // The service drops the fresh token after a real prepared Present.
+            // That changes only the management decision for subsequent rename/
+            // reconciliation, never the current resource or stable identity.
+            if record.publication_mode == Some(super::super::PublicationMode::EstablishNew)
+                && mode == Some(super::super::PublicationMode::ReopenOrAdopt)
+                && record.snapshot.is_some_and(|snapshot| {
+                    snapshot.state() == PdoState::Present
+                        && snapshot.policy_prepared()
+                        && snapshot.last_status() as i32 >= 0
+                })
+            {
+                record.publication_mode = mode;
+                return Ok(());
+            }
+            return Err(unavailable(
+                "publication identity decision requires prepared presence",
+            ));
         }
         if !self.endpoints.contains_key(&spec.id)
             && self.endpoints.len() >= super::super::MAX_ENDPOINTS as usize
@@ -163,18 +294,28 @@ impl<C: EndpointControl> Lifecycle<C> {
         }
         // Publish ownership intent before CREATE. Even a timed out CREATE may
         // have reached the driver; never retry it as if no endpoint existed.
+        if mode.is_some() {
+            self.control.preflight_identity()?;
+        }
         self.endpoints.insert(
             spec.id,
             EndpointRecord {
                 spec: spec.clone(),
+                publication_mode: mode,
                 snapshot: None,
+                removed_query_stamp: None,
                 removing: false,
                 removal_accepted: false,
                 sessions: Vec::new(),
                 error: None,
+                telemetry: None,
+                diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
             },
         );
-        let result = self.control.create(&spec);
+        let result = match mode {
+            Some(mode) => self.control.create_identity(&spec, mode),
+            None => self.control.create(&spec),
+        };
         let record = self.endpoints.get_mut(&spec.id).expect("reserved export");
         match result {
             Ok(Some(snapshot)) => {
@@ -194,72 +335,81 @@ impl<C: EndpointControl> Lifecycle<C> {
         }
     }
 
+    pub(super) fn name_targets(&self) -> Vec<VadEndpointNameTarget> {
+        self.endpoints
+            .values()
+            .filter(|record| record.diagnostic_provenance == VadExportDiagnosticProvenance::Fresh)
+            .map(|record| VadEndpointNameTarget {
+                endpoint_id: record.spec.id,
+                intent: record.spec.intent,
+                snapshot: record.snapshot,
+                removing: record.removing,
+                error: record.error.clone(),
+            })
+            .collect()
+    }
+
     pub fn poll(&mut self) -> Vec<ExportView> {
         for record in self.endpoints.values_mut() {
-            record
-                .sessions
-                .retain(|session| !session.drained.load(Ordering::Acquire));
+            record.reap_sessions();
             if let Some(previous) = record.snapshot
                 && previous.state() != PdoState::Removed
+                && let Some(snapshot) = record.accept_query(self.control.query(previous))
             {
-                match self.control.query(previous) {
-                    Ok(snapshot) => {
-                        record.snapshot = Some(snapshot);
-                        record.error = ((snapshot.last_status() as i32) < 0).then(|| {
-                            format!(
-                                "VAD endpoint preparation failed: {:#x}",
-                                snapshot.last_status()
-                            )
-                        });
-                        if snapshot.gate_open()
-                            && (record.removing
-                                || record.error.is_some()
-                                || !record.sessions.iter().any(|s| s.admitted()))
-                        {
+                if snapshot.gate_open()
+                    && (record.removing
+                        || record.error.is_some()
+                        || !record.sessions.iter().any(|s| s.admitted()))
+                {
+                    for session in &record.sessions {
+                        session.revoke();
+                    }
+                    log::debug!(
+                        target: "moiren::audio::vad",
+                        "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
+                        snapshot.key(),
+                        record.removing,
+                        record.error,
+                        record.sessions.iter().any(|s| s.admitted()),
+                    );
+                    match self.control.gate(snapshot, false) {
+                        Ok(snapshot) => {
                             log::debug!(
                                 target: "moiren::audio::vad",
-                                "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
+                                "event=lifecycle_gate_close_result endpoint={:?} result={snapshot:?}",
                                 snapshot.key(),
-                                record.removing,
-                                record.error,
-                                record.sessions.iter().any(|s| s.admitted()),
                             );
-                            match self.control.gate(snapshot, false) {
-                                Ok(snapshot) => {
-                                    log::debug!(
-                                        target: "moiren::audio::vad",
-                                        "event=lifecycle_gate_close_result endpoint={:?} result={snapshot:?}",
-                                        snapshot.key(),
-                                    );
-                                    record.snapshot = Some(snapshot);
-                                }
-                                Err(error) => {
-                                    log::debug!(
-                                        target: "moiren::audio::vad",
-                                        "event=lifecycle_gate_close_result endpoint={:?} error={error:?}",
-                                        snapshot.key(),
-                                    );
-                                    record.error = Some(error.to_string());
-                                }
-                            }
+                            record.snapshot = Some(snapshot);
                         }
-                        let snapshot = record.snapshot.expect("queried export");
-                        if record.removing
-                            && !record.removal_accepted
-                            && snapshot.state() != PdoState::Removed
-                            && !snapshot.gate_open()
-                            && record.sessions.is_empty()
-                        {
-                            let _ = Self::submit_removal(&mut self.control, record, snapshot);
-                        }
-                    }
-                    Err(error) => {
-                        record.error = Some(error.to_string());
-                        for session in &record.sessions {
-                            session.revoke();
+                        Err(error) => {
+                            log::debug!(
+                                target: "moiren::audio::vad",
+                                "event=lifecycle_gate_close_result endpoint={:?} error={error:?}",
+                                snapshot.key(),
+                            );
+                            record.error = Some(error.to_string());
                         }
                     }
                 }
+                let snapshot = record.snapshot.expect("queried export");
+                if record.removing
+                    && !record.removal_accepted
+                    && snapshot.state() != PdoState::Removed
+                    && !snapshot.gate_open()
+                    && record.sessions.is_empty()
+                {
+                    let _ = Self::submit_removal(&mut self.control, record, snapshot);
+                }
+            }
+            if let Some(terminal) = record.snapshot
+                && terminal.state() == PdoState::Removed
+                && record.removed_query_stamp != Some(stamp(terminal))
+                && record.error.is_none()
+            {
+                // A mutation may return Removed before it has been queried.
+                // Try once before publishing absence. A failed QUERY stays
+                // unconfirmed because the driver may already reuse the slot.
+                record.accept_query(self.control.query(terminal));
             }
         }
         self.endpoints
@@ -267,9 +417,19 @@ impl<C: EndpointControl> Lifecycle<C> {
             .map(|record| ExportView {
                 spec: record.spec.clone(),
                 snapshot: record.snapshot,
+                removed_via_query: record.snapshot.is_some_and(|snapshot| {
+                    snapshot.state() == PdoState::Removed
+                        && record.removed_query_stamp == Some(stamp(snapshot))
+                }),
                 removing: record.removing,
                 error: record.error.clone(),
                 transport_prepared: record.sessions.iter().any(|s| s.prepared()),
+                telemetry: record
+                    .sessions
+                    .last()
+                    .map(|session| session.telemetry_snapshot())
+                    .or(record.telemetry),
+                diagnostic_provenance: record.diagnostic_provenance,
             })
             .collect()
     }
@@ -332,6 +492,13 @@ impl<C: EndpointControl> Lifecycle<C> {
             for session in &record.sessions {
                 session.admitted_ticket.store(ticket, Ordering::Release);
                 session.admitted_revision.store(revision, Ordering::Release);
+            }
+        } else {
+            // A validated close withdraws this endpoint's local permission
+            // before the native epoch changes, even if SET_GATE later fails.
+            // Do not cancel/drain here or revoke the shared sibling authority.
+            for session in &record.sessions {
+                session.revoke();
             }
         }
         match self.control.gate(current, open) {
@@ -428,6 +595,34 @@ impl<C: EndpointControl> Lifecycle<C> {
             return Ok(());
         }
         Self::submit_removal(&mut self.control, record, current)
+    }
+
+    pub(super) fn confirm_retired(
+        &mut self,
+        id: VirtualEndpointId,
+        expected: [u64; 5],
+    ) -> Result<super::super::EndpointSnapshot, BackendError> {
+        let previous = self
+            .endpoints
+            .get(&id)
+            .and_then(|record| record.snapshot)
+            .ok_or_else(|| unavailable("missing terminal export snapshot"))?;
+        if previous.state() != PdoState::Removed || stamp(previous) != expected {
+            return Err(BackendError::Cancelled);
+        }
+
+        // EndpointControl::query validates the key, shape and state transition.
+        let current = self.control.query(previous)?;
+        if current.state() != PdoState::Removed || stamp(current) != expected {
+            return Err(BackendError::Cancelled);
+        }
+        if (current.last_status() as i32) < 0 {
+            return Err(unavailable(&format!(
+                "VAD endpoint removal QUERY status: {:#x}",
+                current.last_status()
+            )));
+        }
+        Ok(current)
     }
 
     fn submit_removal(

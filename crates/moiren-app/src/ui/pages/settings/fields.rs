@@ -331,6 +331,12 @@ pub(crate) fn stream_editor(
             t!("Determined by ASIO driver"),
         ));
     }
+    if audio.backend == AudioBackend::Wasapi && stream.mode == DeviceMode::Shared {
+        return view.child(field(
+            &t!("Requested device period (frames)"),
+            super::native_period::editor(shell, editor, direction, device, prefix),
+        ));
+    }
     let buffer_target = target.clone();
     view.child(field(
         &t!("Requested device buffer"),
@@ -389,6 +395,19 @@ pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioSh
     };
     let this = cx.entity();
     let restart_this = this.clone();
+    let feedback_text = match draft.feedback.as_ref() {
+        Some(feedback) => super::model::feedback_text(feedback),
+        None => {
+            if draft.dirty() {
+                t!("Unsaved changes").into_owned()
+            } else if running {
+                t!("Saved requests and active audio are shown separately in Diagnostics.")
+                    .into_owned()
+            } else {
+                t!("Audio is stopped. Save keeps it stopped.").into_owned()
+            }
+        }
+    };
     div()
         .w_full()
         .flex()
@@ -397,6 +416,9 @@ pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioSh
         .child(
             div()
                 .id(SharedString::from(format!("{prefix}-feedback")))
+                .role(Role::Label)
+                .aria_label(feedback_text.clone())
+                .aria_value(feedback_text.clone())
                 .text_size(px(theme::TEXT_SM))
                 .text_color(match draft.feedback.as_ref() {
                     Some(feedback) if feedback.is_error() => theme::DANGER,
@@ -405,21 +427,7 @@ pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioSh
                 // The stored status translates here with the current
                 // locale (design 21 §4); the fallbacks are paint-time
                 // t! calls like every other rendered string.
-                .child(match draft.feedback.as_ref() {
-                    Some(feedback) => super::model::feedback_text(feedback),
-                    None => {
-                        if draft.dirty() {
-                            t!("Unsaved changes").into_owned()
-                        } else if running {
-                            t!(
-                                "Saved requests and active audio are shown separately in Diagnostics."
-                            )
-                            .into_owned()
-                        } else {
-                            t!("Audio is stopped. Save keeps it stopped.").into_owned()
-                        }
-                    }
-                })
+                .child(feedback_text)
                 .gpui_test_observe(),
         )
         .child(
@@ -468,9 +476,8 @@ pub(crate) fn actions(shell: &StudioShell, editor: Editor, cx: &Context<StudioSh
                         .variant(ButtonVariant::Primary)
                         .disabled(busy || !needs_restart)
                         .on_click(move |_, _, cx| {
-                            restart_this.update(cx, |shell, cx| {
-                                shell.save_audio_settings(editor, true, cx)
-                            })
+                            restart_this
+                                .update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
                         }),
                     )
                 }),

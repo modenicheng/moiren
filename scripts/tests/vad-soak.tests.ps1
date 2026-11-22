@@ -39,6 +39,14 @@ function GoodReport {
 }
 
 Confirm-SoakReport (GoodReport) 60 60 120
+$musicReport = GoodReport
+$musicReport | Add-Member -NotePropertyName soak_music -NotePropertyValue $musicReport.soak_pcm
+$musicReport.soak_pcm = $null
+Confirm-SoakReport $musicReport 60 60 120 -Music
+Reject { Confirm-SoakReport $musicReport 60 60 120 } 'soak_pcm'
+Reject { Confirm-SoakReport (GoodReport) 60 60 120 -Music } 'soak_music'
+$musicReport.soak_music.elapsed_ms = 59999
+Reject { Confirm-SoakReport $musicReport 60 60 120 -Music } 'soak_music'
 $report = GoodReport
 $report.soak_pcm = $null
 Reject { Confirm-SoakReport $report 60 60 120 } 'soak_pcm'
@@ -61,6 +69,8 @@ $testRoot = Join-Path $PSScriptRoot ("..\..\driver\vad\build\tests\soak-runner-"
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 $executable = Join-Path $testRoot 'fake.exe'
 [IO.File]::WriteAllText($executable, 'Not an executable; Start-Process is replaced in this test.')
+$material = Join-Path $testRoot 'fake.wav'
+[IO.File]::WriteAllText($material, 'Material contents are unused by the fake process.')
 $digest = (Get-FileHash -LiteralPath $executable).Hash
 $global:VadSoakTest = $null
 
@@ -88,6 +98,9 @@ function global:Start-Process {
             soak_idle = @{ completed = $true; requested_ms = 1000; elapsed_ms = 1000 }
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'probe\report.json')
     }
+    if ($global:VadSoakTest.Case -eq 'wrong-music-phase') {
+        GoodReport | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'probe\report.json')
+    }
     if ($global:VadSoakTest.Case -eq 'cancel') {
         [IO.File]::WriteAllText((Join-Path $root 'cancel'), '')
     }
@@ -108,7 +121,7 @@ function global:Start-Process {
 }
 
 try {
-    foreach ($case in @('missing-phase', 'partial-power', 'cleanup-error', 'cancel', 'preflight-duration')) {
+    foreach ($case in @('missing-phase', 'wrong-music-phase', 'partial-power', 'cleanup-error', 'cancel', 'preflight-duration')) {
         $output = [IO.Path]::GetFullPath((Join-Path $testRoot $case))
         $global:VadSoakTest = @{
             Case = $case; Output = $output; PowerCalls = 0; Launches = 0; Kills = 0; Disposed = $false
@@ -117,9 +130,11 @@ try {
         try {
             $idle = 60
             $pcm = 60
+            $options = @{}
             if ($case -eq 'preflight-duration') { $idle = 1; $pcm = 0 }
+            if ($case -eq 'wrong-music-phase') { $options.PcmFile = $material }
             & $runner -Executable $executable -ExpectedSha256 $digest -SourceCommit ('a' * 40) `
-                -OutputDirectory $output -IdleSeconds $idle -PcmSeconds $pcm -ExpectedComputer $env:COMPUTERNAME
+                -OutputDirectory $output -IdleSeconds $idle -PcmSeconds $pcm -ExpectedComputer $env:COMPUTERNAME @options
         } catch {
             $failed = $true
             if (-not (Test-Path -LiteralPath (Join-Path $output 'result.json'))) {
@@ -149,6 +164,9 @@ try {
             }
             'missing-phase' {
                 Require ($result.error -like '*soak_idle*') 'Short lifecycle result not rejected by phase evidence'
+            }
+            'wrong-music-phase' {
+                Require ($result.error -like '*soak_music*') 'PcmFile did not require music phase evidence'
             }
             'preflight-duration' {
                 Require ($result.elapsed_seconds -gt 1 -and $result.probe_elapsed_seconds -lt 1) 'Preflight/probe clocks were not separated'

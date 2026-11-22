@@ -6,6 +6,7 @@ use gpui_kit::{
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::service::RunLimit;
 use crate::ui::UiState;
 use crate::ui::pages;
 use crate::ui::pages::graph::graph_canvas::{CanvasFrame, CanvasWorld};
@@ -1491,6 +1492,7 @@ fn selected_node_level_demand_follows_the_inspector_meter_surface(
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1578,6 +1580,7 @@ fn inspector_observation_readout_follows_meter_status_changes(cx: &mut gpui_kit:
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -1741,6 +1744,7 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2006,6 +2010,7 @@ fn set_page_cancels_canvas_gestures_and_restores_the_poll_pump(cx: &mut gpui_kit
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2320,13 +2325,13 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
-        assert!(window.find("matrix-inspector").visible());
-        assert!(window.find("disconnect-route").visible());
     });
     // The freshly opened panel is still springing open; let it settle before
-    // clicking controls inside it.
+    // checking clipped controls or clicking them.
     settle_panels(cx);
     cx.update(|window, cx| {
+        assert!(window.find("matrix-inspector").visible());
+        assert!(window.find("disconnect-route").visible());
         window.click("route-up", cx);
     });
     wait_for_graph(&view, cx, |graph| graph.graph.edges()[0].params().gain > 1.);
@@ -2562,6 +2567,7 @@ fn graph_meter_animation_does_not_rebuild_the_cached_page(cx: &mut gpui_kit::Tes
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2697,6 +2703,7 @@ fn graph_meter_frame_repaints_node_bars_across_animation_only_frames(
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -2872,6 +2879,7 @@ fn graph_spectrum_curve_repaints_across_animation_only_frames_and_parks_when_sta
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();
@@ -3012,6 +3020,7 @@ fn zoomed_graph_camera_releases_offscreen_meter_demand_and_fit_restores_it(
             output_endpoint_id: "output".into(),
             gain: 1.,
             pan: 0.,
+            limit: RunLimit::UntilStopped,
             max_block_frames: 256,
         }))
         .unwrap();

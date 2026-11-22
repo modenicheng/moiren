@@ -3,7 +3,11 @@ use super::{AudioSettings, StreamSettings};
 use moiren_engine::audio_config::SampleFormat;
 
 fn draft(audio: AudioSettings) -> Draft {
-    Draft::new(audio, crate::service::AudioLatencyProfile::Compatible)
+    Draft::new(
+        audio,
+        crate::service::AudioLatencyProfile::Compatible,
+        Default::default(),
+    )
 }
 
 #[test]
@@ -28,7 +32,10 @@ fn stale_device_draft_preserves_new_defaults_and_other_device_overrides() {
             ..Default::default()
         },
     );
-    let merged = device.submission(&current, device.profile).unwrap().audio;
+    let merged = device
+        .submission(&current, device.profile, device.transport)
+        .unwrap()
+        .audio;
     assert_eq!(merged.processing, current.processing);
     assert_eq!(merged.output, current.output);
     assert_eq!(merged.input_overrides, current.input_overrides);
@@ -57,7 +64,10 @@ fn stale_global_draft_preserves_new_and_removed_device_overrides() {
             ..Default::default()
         },
     );
-    let merged = global.submission(&current, global.profile).unwrap().audio;
+    let merged = global
+        .submission(&current, global.profile, global.transport)
+        .unwrap()
+        .audio;
     assert_eq!(merged.input.sample_rate, Some(96_000));
     assert_eq!(merged.input_overrides, current.input_overrides);
     assert!(!merged.output_overrides.contains_key("removed"));
@@ -80,7 +90,10 @@ fn reset_removes_only_the_edited_override_and_uses_latest_defaults() {
     current
         .input_overrides
         .insert("b".into(), StreamSettings::default());
-    let merged = device.submission(&current, device.profile).unwrap().audio;
+    let merged = device
+        .submission(&current, device.profile, device.transport)
+        .unwrap()
+        .audio;
     assert!(!merged.input_overrides.contains_key("a"));
     assert_eq!(merged.effective_input("a"), current.input);
     assert!(merged.input_overrides.contains_key("b"));
@@ -99,7 +112,10 @@ fn conflicting_full_device_override_is_rejected_without_losing_draft() {
             ..Default::default()
         },
     );
-    let feedback = device.submission(&current, device.profile).err().unwrap();
+    let feedback = device
+        .submission(&current, device.profile, device.transport)
+        .err()
+        .unwrap();
     assert_eq!(
         feedback,
         DraftFeedback::DomainChanged {
@@ -118,10 +134,14 @@ fn failed_submission_rebase_does_not_turn_unedited_defaults_into_owned_edits() {
     device_stream_mut(&mut device.audio, Direction::Output, "a").buffer_frames = Some(64);
     let mut current = original;
     current.output.sample_rate = Some(88_200);
-    let first = device.submission(&current, device.profile).unwrap();
+    let first = device
+        .submission(&current, device.profile, device.transport)
+        .unwrap();
     assert_eq!(first.audio.output.sample_rate, Some(88_200));
     current.output.sample_rate = Some(96_000);
-    let retry = device.submission(&current, device.profile).unwrap();
+    let retry = device
+        .submission(&current, device.profile, device.transport)
+        .unwrap();
     assert_eq!(retry.audio.output.sample_rate, Some(96_000));
     assert_eq!(retry.audio.output_overrides["a"].buffer_frames, Some(64));
 }

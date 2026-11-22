@@ -12,11 +12,18 @@ mod jobs_tests;
 mod latency;
 mod mailbox;
 mod managed;
+pub(crate) mod measured_process;
 mod model;
 mod plugin_cache;
 mod plugins;
+#[cfg(windows)]
+pub(crate) mod process_trace;
 mod publish;
 mod recording;
+#[cfg(windows)]
+pub use process_trace::*;
+pub(crate) use publish::snapshot;
+use publish::{small_snapshot_inputs_match, snapshot_revision};
 #[cfg(test)]
 mod settings_tests;
 mod signals;
@@ -24,6 +31,7 @@ mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
 #[path = "managed/test_backend.rs"]
 pub(crate) mod test_backend;
+mod transport_latency;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
@@ -37,18 +45,22 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 use managed::LevelRegistry;
 pub use managed::{LevelLease, LevelSource, ManagedDriver};
+pub use measured_process::{
+    MeasuredProcessRequest, MeasuredProcessSummary, MeasuredProcessWindow, ProcessWindowPolicy,
+};
 pub use moiren_engine::audio_config::*;
 pub use plugins::{
     PluginAssignment, PluginEntry, PluginLibrary, empty_library, run_forced_plugin_scan,
     run_sandbox_scan,
 };
-pub(crate) use publish::snapshot;
-use publish::{small_snapshot_inputs_match, snapshot_revision};
 pub use recording::{
     DateTimeParts, RecordingCard, RecordingFormat, RecordingPhase, RecordingService,
     RecordingSnapshot,
 };
 pub use signals::{SignalTopics, SpectrumTopic, SubscriptionDeliveryError, SubscriptionTicket};
+pub use transport_latency::{
+    DeliveryProvenance, ExpertInputBuffer, ExpertRenderQueue, TransportLatencySettings,
+};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 
@@ -124,14 +136,23 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub(crate) measured_process: Option<measured_process::MeasuredProcessProfile>,
+    pub active_measured_process: Option<MeasuredProcessSummary>,
+    pub last_cleanup: Option<SessionCleanupObservation>,
+    #[cfg(windows)]
+    pub process_trace_status: Option<ProcessTraceCollectionStatus>,
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
+    #[cfg(windows)]
+    pub native_observations: Option<NativeSessionObservations>,
     #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: AudioLatencyProfile,
     pub active_latency_profile: Option<AudioLatencyProfile>,
     pub audio_settings: AudioSettings,
     pub active_audio_settings: Option<AudioSettings>,
+    pub transport_latency: TransportLatencySettings,
+    pub active_transport_latency: Option<TransportLatencySettings>,
     pub graph: ServiceGraph,
     pub core: ServiceCore,
     /// Runtime recording state per node; see [`recording`] for why it stays
@@ -177,14 +198,23 @@ impl Default for ServiceContext {
         let signals = signals::SignalService::new().expect("fixed application signal topics");
         let levels = LevelRegistry::new(&signals.topics);
         Self {
+            measured_process: None,
+            active_measured_process: None,
+            last_cleanup: None,
+            #[cfg(windows)]
+            process_trace_status: None,
             exports: ExportService::default(),
             loaded_project: None,
+            #[cfg(windows)]
+            native_observations: None,
             #[cfg(windows)]
             professional_observations: None,
             latency_profile: AudioLatencyProfile::default(),
             active_latency_profile: None,
             audio_settings: AudioSettings::default(),
             active_audio_settings: None,
+            transport_latency: TransportLatencySettings::default(),
+            active_transport_latency: None,
             graph: ServiceGraph::default(),
             core: ServiceCore::default(),
             recordings: RecordingService::default(),
@@ -260,6 +290,8 @@ impl ServiceContext {
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
         self.audio_settings = audio;
+        self.exports.clear_new_identities();
+        self.measured_process = None;
         self.loaded_project = Some(Arc::new(document));
         Ok(())
     }
@@ -272,6 +304,16 @@ impl ServiceContext {
             return false;
         }
         self.audio_settings = settings;
+        true
+    }
+
+    pub(crate) fn set_transport_latency(&mut self, settings: TransportLatencySettings) -> bool {
+        if let Err(error) = settings.validate() {
+            self.graph.record_error(error);
+            return false;
+        }
+        self.transport_latency = settings;
+        self.measured_process = None;
         true
     }
 
@@ -377,6 +419,18 @@ impl ServiceDriver for CoreDriver {
     }
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, r: AppRequest) {
         match r {
+            AppRequest::CreateExport {
+                direction,
+                name,
+                channels,
+            } => {
+                if let Err(error) =
+                    c.exports
+                        .allocate_export(&mut c.graph, direction, name, channels)
+                {
+                    c.graph.record_error(error);
+                }
+            }
             AppRequest::LoadProject(document) => {
                 if let Err(error) = c.load_project(document) {
                     c.graph.record_error(error);
@@ -402,6 +456,20 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
             }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
+            }
+            AppRequest::ApplyMeasuredProcessBridge(_)
+            | AppRequest::ApplyWindowedProcessBridge { .. } => {
+                c.graph.record_error(
+                    "measured Process application requires the managed native service",
+                );
+            }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(_) => {
+                c.graph
+                    .record_error("No native audio backend is configured");
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -411,11 +479,10 @@ impl ServiceDriver for CoreDriver {
             AppRequest::RedoGraph => {
                 c.graph.redo();
             }
-            AppRequest::ReplaceGraph { graph, nodes } => {
-                if let Err(error) = c.graph.replace(graph, nodes) {
-                    c.graph.record_error(error);
-                }
-            }
+            AppRequest::ReplaceGraph { graph, nodes } => match c.graph.replace(graph, nodes) {
+                Ok(()) => c.exports.clear_new_identities(),
+                Err(error) => c.graph.record_error(error),
+            },
             AppRequest::ApplyGraph => {
                 c.graph
                     .record_error("No native audio backend is configured");
@@ -427,13 +494,17 @@ impl ServiceDriver for CoreDriver {
                 c.graph
                     .record_error("No native audio backend is configured");
             }
+            #[cfg(any(test, feature = "vad-integration-probe"))]
+            AppRequest::Stop => {}
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceJoinError {
     ThreadPanicked,
 }
+
 pub struct ServiceRuntime {
     handle: AppHandle,
     thread: JoinHandle<()>,
@@ -607,6 +678,10 @@ impl ServiceRuntime {
     }
     pub fn handle(&self) -> AppHandle {
         self.handle.clone()
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn is_finished(&self) -> bool {
+        self.thread.is_finished()
     }
     /// Call after an Exited snapshot; this is the only UI-side service join.
     pub fn join(self) -> Result<(), ServiceJoinError> {
