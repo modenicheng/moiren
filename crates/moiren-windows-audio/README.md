@@ -86,9 +86,11 @@ static unsupported configurations do not arm retry probes. Endpoint probing
 supplies retry eligibility; actual stream preparation still establishes format
 and availability.
 
-VAD endpoint name refreshes publish Windows metadata after a fresh driver
-query confirms that the same PDO lifetime is still present. When confirmation
-fails, the Windows name and state are unavailable until a later refresh.
+VAD endpoint name refreshes use a detached metadata reader with one in-flight
+background query per process. Lifecycle polls and shutdown continue while the
+reader waits for Windows. The lifecycle worker publishes completed metadata
+after a fresh driver query confirms that the same PDO lifetime is still
+present. Expired or unconfirmed Windows names and states are unavailable.
 The Windows reader walks each candidate's adapter topology once per refresh.
 A later PnP failure can be attributed using the adapter instance already read.
 

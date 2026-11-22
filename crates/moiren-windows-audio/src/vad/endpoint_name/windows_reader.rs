@@ -56,6 +56,7 @@ impl Drop for TaskString {
 
 struct OwnedProperty(PROPVARIANT);
 
+#[derive(Clone)]
 pub struct WindowsEndpointNameReader {
     interface: DeviceInterface,
 }
@@ -115,6 +116,7 @@ impl EndpointNameReader for WindowsEndpointNameReader {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct WindowsObserverClock {
     frequency: Option<u64>,
     origin: std::time::Instant,
@@ -445,7 +447,7 @@ impl WindowsObserverClock {
 }
 
 impl ObserverClock for WindowsObserverClock {
-    fn now(&mut self) -> std::time::Duration {
+    fn now(&self) -> std::time::Duration {
         self.origin.elapsed()
     }
 

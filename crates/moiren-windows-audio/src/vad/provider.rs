@@ -4,7 +4,10 @@
 //! from native client lifetimes. A raw PDO may be Present while no client has
 //! opened a stream; that is an idle, usable state, not a transport failure.
 
-use super::endpoint_name::{NameObserver, VadEndpointNameObservation, VadEndpointNameTarget};
+use super::endpoint_name::{
+    NAME_READ_IN_FLIGHT, NameObserver, NameRefresh, ObserverClock, VadEndpointNameObservation,
+    VadEndpointNameTarget, WindowsEndpointNameReader, WindowsObserverClock,
+};
 use super::{
     Channels, ClientError, ControlClient, DeviceInterface, Intent, PcmCompletion,
     PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, ResidualPcm,
@@ -152,8 +155,9 @@ pub struct WindowsVadProvider {
     state: Arc<Mutex<Lifecycle<ControlClient>>>,
     admission: Arc<Admission>,
     name_observer: Mutex<NameObserver>,
-    name_reader: Mutex<super::endpoint_name::WindowsEndpointNameReader>,
-    name_clock: Mutex<super::endpoint_name::WindowsObserverClock>,
+    name_refresh: Mutex<NameRefresh>,
+    name_reader: WindowsEndpointNameReader,
+    name_clock: WindowsObserverClock,
     input_capture: Option<Arc<input_capture::CaptureShared>>,
     output_capture: Option<Arc<output_capture::CaptureShared>>,
 }
@@ -280,10 +284,9 @@ impl WindowsVadProvider {
             state: Arc::new(Mutex::new(Lifecycle::new(control))),
             admission: Arc::new(Admission::new()),
             name_observer: Mutex::new(NameObserver::default()),
-            name_reader: Mutex::new(super::endpoint_name::WindowsEndpointNameReader::new(
-                interface.clone(),
-            )),
-            name_clock: Mutex::new(super::endpoint_name::WindowsObserverClock::new()),
+            name_refresh: Mutex::new(NameRefresh::default()),
+            name_reader: WindowsEndpointNameReader::new(interface.clone()),
+            name_clock: WindowsObserverClock::new(),
             input_capture,
             output_capture,
         }))
@@ -406,8 +409,8 @@ impl WindowsVadProvider {
 
     /// Explicitly read Windows endpoint names on a control worker.
     ///
-    /// This is deliberately separate from `export_observations`: normal
-    /// lifecycle polling and service pumps never enumerate MMDevice endpoints.
+    /// This synchronous API has a separate cache from the lifecycle worker's
+    /// background refresh. It can wait for Windows metadata.
     pub fn export_name_observations(
         &self,
         exports: &[VadEndpointNameTarget],
@@ -416,20 +419,14 @@ impl WindowsVadProvider {
             .name_observer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut reader = self
-            .name_reader
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut clock = self
-            .name_clock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        observer.observe(exports, &mut *reader, &mut *clock)
+        let mut reader = self.name_reader.clone();
+        let mut clock = self.name_clock;
+        observer.observe(exports, &mut reader, &mut clock)
     }
 
-    /// Read Windows metadata on the lifecycle worker, then confirm it with the
-    /// worker's normal driver poll. A prior snapshot selects the reads and the
-    /// current snapshots determine which names can accompany the returned views.
+    /// Harvest detached Windows metadata before the normal driver poll. The
+    /// prior snapshots select a refresh, and the new snapshots confirm which
+    /// completed reads belong to the current PDO lifetimes.
     pub fn export_observations_with_names(
         &self,
     ) -> (Vec<VadExportObservation>, Vec<VadEndpointNameObservation>) {
@@ -439,7 +436,17 @@ impl WindowsVadProvider {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .name_targets();
         poll_after_name_read(
-            || self.export_name_observations(&targets),
+            || {
+                self.name_refresh
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .poll(
+                        &targets,
+                        self.name_clock.now(),
+                        &NAME_READ_IN_FLIGHT,
+                        || (self.name_reader.clone(), self.name_clock),
+                    )
+            },
             || self.export_observations(),
         )
     }

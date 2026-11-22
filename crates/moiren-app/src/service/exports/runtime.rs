@@ -665,7 +665,11 @@ impl Adapter for WindowsAdapter {
                 errors.push(error);
             }
         }
-        let (provider_views, windows_names) = self.0.export_observations_with_names();
+        let (provider_views, windows_names) = if work.shutdown {
+            (self.0.export_observations(), Vec::new())
+        } else {
+            self.0.export_observations_with_names()
+        };
         let observations = provider_views
             .into_iter()
             .map(|view| {
