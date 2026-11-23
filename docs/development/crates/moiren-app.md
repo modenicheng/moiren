@@ -35,7 +35,7 @@ cargo run --locked -p moiren-app --features gpui-test --example ui_capture
 cargo run --locked -p moiren-app --features component-gallery --example component_preview
 ```
 
-`ui_capture` renders the real shell at 1440×900 and 1024×720 into `docs/designs/screenshots/application/`; attach UI screenshots to PRs. `--features vad-integration-probe` with `--example vad_integration` exercises the VAD service integration. See [verification.md](../verification.md) for the full gate.
+`ui_capture` renders the real shell at 1440×900 and 1024×720 into `docs/designs/screenshots/application/` (or the directory passed as the first argument); attach UI screenshots to PRs. Before each shot the harness waits for the window to come to rest — panel springs and animations settled, no request pending at the service, identical consecutive probe frames — instead of sleeping for a fixed time, so a same-commit recapture is byte-identical; a window that never rests fails the run. `--features vad-integration-probe` with `--example vad_integration` exercises the VAD service integration. See [verification.md](../verification.md) for the full gate.
 
 ## Docs
 

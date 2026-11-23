@@ -3,38 +3,6 @@ use super::*;
 use crate::service::{GraphEdit, MixerState, ServiceGraph};
 use moiren_core::graph::NodeKind;
 
-async fn settle(
-    shell: &Entity<StudioShell>,
-    confirmed: bool,
-    cx: &mut AsyncApp,
-) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        cx.background_executor()
-            .timer(Duration::from_millis(10))
-            .await;
-        let ready = shell.update(cx, |shell, cx| {
-            shell.state.update(cx, |state, _| state.poll());
-            let state = shell.state.read(cx);
-            !state.pending_request
-                && (!confirmed
-                    || state.snapshot.graph.active_revision
-                        == Some(state.snapshot.graph.candidate_revision))
-        });
-        if ready {
-            break;
-        }
-        anyhow::ensure!(
-            std::time::Instant::now() < deadline,
-            "capture state did not settle"
-        );
-    }
-    cx.background_executor()
-        .timer(Duration::from_millis(100))
-        .await;
-    Ok(())
-}
-
 pub(super) async fn capture(
     window: AnyWindowHandle,
     shell: &Entity<StudioShell>,
@@ -42,10 +10,8 @@ pub(super) async fn capture(
     save: &impl Fn(&mut AsyncApp, std::path::PathBuf),
     cx: &mut AsyncApp,
 ) -> anyhow::Result<()> {
-    window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))))?;
-    cx.background_executor()
-        .timer(Duration::from_millis(200))
-        .await;
+    let viewport = size(px(1440.), px(900.));
+    window.update(cx, |_, window, _| window.resize(viewport))?;
     shell.update(cx, |shell, cx| {
         // The states capture wants the roomy layout explicitly: the compact
         // meter run before it collapsed the panels, and growing back above
@@ -87,7 +53,7 @@ pub(super) async fn capture(
         });
         cx.notify();
     });
-    settle(shell, false, cx).await?;
+    settle(window, shell, Some(viewport), cx).await?;
     save(cx, directory.join("mixer-muted-controls.png"));
 
     let mut graph = ServiceGraph::default();
@@ -130,7 +96,7 @@ pub(super) async fn capture(
         });
         cx.notify();
     });
-    settle(shell, false, cx).await?;
+    settle(window, shell, None, cx).await?;
     save(cx, directory.join("mixer-routing-overflow.png"));
     Ok(())
 }

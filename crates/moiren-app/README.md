@@ -20,7 +20,7 @@ cargo test --locked -p moiren-app --features gpui-test
 cargo run --locked -p moiren-app --features gpui-test --example ui_capture
 ```
 
-`ui_capture` 使用真正的 shell 和 GPUI 原生渲染器，在 1440×900、1024×720 逻辑尺寸分别导出五个页面，然后退出。图像保存在 `docs/designs/screenshots/application/`；物理像素随显示缩放比例变化。
+`ui_capture` 使用真正的 shell 和 GPUI 原生渲染器，在 1440×900、1024×720 逻辑尺寸分别导出各页面与状态，然后退出。每张截图前等待窗口进入静止状态（面板弹簧与动画收敛、服务请求处理完毕、连续探测帧像素不变），不使用固定延时，因此同一份代码连拍的结果逐字节一致。图像默认保存在 `docs/designs/screenshots/application/`，第一个参数可改输出目录；物理像素随显示缩放比例变化。
 
 headless 应用负责 engine 的装配、控制和生命周期，默认运行软件 IO 全链路：
 
