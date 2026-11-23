@@ -18,6 +18,7 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -205,17 +206,37 @@ fn flush_at_next_frame(
 const ENTRY_MIN_DB: f64 = -120.;
 const ENTRY_MAX_DB: f64 = 24.;
 
+/// The minus signs other than the ASCII hyphen that a typed entry can
+/// carry: the typographic minus the readouts display (U+2212) and the
+/// full-width minus of a zh IME (U+FF0D, accepted next to the half-width
+/// spelling).
+const OTHER_MINUSES: [char; 2] = ['\u{2212}', '\u{FF0D}'];
+
+/// Folds [`OTHER_MINUSES`] onto the ASCII hyphen. Every signed numeric
+/// entry folds its text before parsing, so a minus typed in either
+/// keyboard width reads the same. Text that carries neither is borrowed
+/// untouched: the compressor's echo check parses every parameter on each
+/// shell sync, and an unchanged entry must not allocate there.
+pub(crate) fn fold_minus(text: &str) -> Cow<'_, str> {
+    if text.contains(OTHER_MINUSES) {
+        Cow::Owned(text.replace(OTHER_MINUSES, "-"))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 /// Parses a fader/gain dB entry into an amplitude. Digital silence accepts
-/// the `-inf` spellings (any case, ASCII or U+2212 minus, `∞`); otherwise
-/// the text must be a finite number inside the entry domain. Out-of-range or
-/// garbage input is `None` — never clamped — so an invalid entry changes
-/// nothing.
+/// the `-inf` spellings (any case, `∞`); otherwise the text must be a finite
+/// number inside the entry domain. Minus spellings fold first
+/// ([`fold_minus`]). Out-of-range or garbage input is `None` — never
+/// clamped — so an invalid entry changes nothing.
 fn parse_gain_db(text: &str) -> Option<f64> {
-    match text.trim().to_lowercase().as_str() {
-        "-inf" | "−inf" | "-infinity" | "−infinity" | "-∞" | "−∞" => return Some(0.),
+    let text = fold_minus(text.trim());
+    match text.to_lowercase().as_str() {
+        "-inf" | "-infinity" | "-∞" => return Some(0.),
         _ => {}
     }
-    let db: f64 = text.trim().parse().ok()?;
+    let db: f64 = text.parse().ok()?;
     (db.is_finite() && (ENTRY_MIN_DB..=ENTRY_MAX_DB).contains(&db)).then(|| 10f64.powf(db / 20.))
 }
 
@@ -223,16 +244,16 @@ fn parse_gain_db(text: &str) -> Option<f64> {
 /// −1..=1 mixer balance. Numbers outside 0..=100 after the optional
 /// left/right sign are rejected, never clamped (e.g. "150" is `None`).
 fn parse_balance(text: &str) -> Option<f64> {
-    parse_centered(text, true)
+    parse_centered(&fold_minus(text.trim()), true)
 }
 
 /// Parses a pan-node position entry: a bare finite number in −1..=1, or the
 /// same `C`/`L`/`R` percent grammar as [`parse_balance`].
 fn parse_pan(text: &str) -> Option<f64> {
-    // The bare-number path also accepts the Unicode minus, so a typed raw
-    // position like "−0.5" reads as a position and never as the percent
-    // grammar's left-0.5%.
-    let text = text.trim().replace('\u{2212}', "-");
+    // The bare-number path also accepts the other minus spellings, so a
+    // typed raw position like "−0.5" reads as a position and never as the
+    // percent grammar's left-0.5%.
+    let text = fold_minus(text.trim());
     if let Ok(value) = text.parse::<f64>()
         && value.is_finite()
         && (-1. ..=1.).contains(&value)
@@ -246,15 +267,15 @@ fn parse_pan(text: &str) -> Option<f64> {
 /// center tokens, then an optional direction prefix before a 0..=100 number
 /// mapped onto −1..=1. `bare` lets an un-signed number be a plain −100..=100
 /// reading (balance); otherwise the direction prefix is required so a bare
-/// out-of-range position is rejected instead of read as a percent.
+/// out-of-range position is rejected instead of read as a percent. `text`
+/// arrives trimmed and already through [`fold_minus`].
 fn parse_centered(text: &str, bare: bool) -> Option<f64> {
-    let text = text.trim();
     if text.eq_ignore_ascii_case("C") || text == "0" {
         return Some(0.);
     }
     let mut chars = text.char_indices();
     let (direction, skip) = match chars.next()?.1 {
-        'l' | 'L' | '-' | '\u{2212}' => (-1., chars.next().map_or(text.len(), |(i, _)| i)),
+        'l' | 'L' | '-' => (-1., chars.next().map_or(text.len(), |(i, _)| i)),
         'r' | 'R' | '+' => (1., chars.next().map_or(text.len(), |(i, _)| i)),
         _ if bare => (1., 0),
         _ => return None,
@@ -842,7 +863,7 @@ pub(crate) fn sync_slider_range<K: Ord + Clone, T: 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchGate, fader_step, parse_balance, parse_gain_db, parse_pan};
+    use super::{DispatchGate, fader_step, fold_minus, parse_balance, parse_gain_db, parse_pan};
     use crate::ui::widgets::fader::FaderScale;
 
     #[test]
@@ -1004,6 +1025,35 @@ mod tests {
         assert_eq!(parse_gain_db("abc"), None);
         assert_eq!(parse_gain_db(""), None);
         assert_eq!(parse_gain_db("99"), None);
+    }
+
+    #[test]
+    fn typed_entries_accept_the_fullwidth_ime_minus() {
+        // A zh IME's full-width minus reads like the half-width one in every
+        // signed entry: the silence spellings and the dB domain of a gain.
+        assert_eq!(parse_gain_db("－inf"), Some(0.));
+        assert_eq!(parse_gain_db("－INF"), Some(0.));
+        assert_eq!(parse_gain_db("－∞"), Some(0.));
+        assert_eq!(parse_gain_db("－6"), Some(10f64.powf(-6. / 20.)));
+        assert_eq!(parse_gain_db("－120"), Some(10f64.powf(-6.)));
+        // The fold moves no boundary: out of domain and garbage stay `None`.
+        assert_eq!(parse_gain_db("－120.1"), None);
+        assert_eq!(parse_gain_db("－abc"), None);
+        // Balance and pan read the same minus in both of their grammars.
+        assert_eq!(parse_balance("－25"), Some(-0.25));
+        assert_eq!(parse_balance("L－50"), None);
+        assert_eq!(parse_pan("－0.5"), Some(-0.5));
+        assert_eq!(parse_pan("－25"), Some(-0.25));
+        // One fold for every spelling: the typographic minus the readouts
+        // display now reads in the gain's numeric path too, not only in
+        // `-inf`; balance already read it and still does, through the fold.
+        assert_eq!(parse_gain_db("−6"), Some(10f64.powf(-6. / 20.)));
+        assert_eq!(parse_balance("−25"), Some(-0.25));
+        assert_eq!(fold_minus("a−b－c"), "a-b-c");
+        // An entry without either minus is borrowed, never copied: the
+        // compressor's echo check parses every parameter on each shell sync.
+        assert!(matches!(fold_minus("-6"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(fold_minus("－6"), std::borrow::Cow::Owned(_)));
     }
 
     #[test]
