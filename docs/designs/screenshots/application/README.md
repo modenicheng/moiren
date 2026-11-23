@@ -8,7 +8,13 @@ cargo run --locked -p moiren-app --features gpui-test --example ui_capture
 ```
 
 It runs the real shell with the native renderer and writes into this
-directory by default; physical pixels scale with the display factor.
+directory by default (pass another directory as the first argument to keep a
+run out of the tracked tree); physical pixels scale with the display factor.
+The page shots here are byte-identical across same-commit recaptures as long
+as the pointer stays off the capture window: each one waits for the window to
+come to rest, and the device catalog is a fixed fixture. The wait, its
+exceptions and the fixture are documented in the
+[crate guide's Verification section](../../../development/crates/moiren-app.md#verification).
 
 The `mixer-*.png`, `platform-*.json` and `meter-frames.json` files are the
 2026-10-28 mixer display-cadence measurements. Regenerate with:
@@ -17,7 +23,7 @@ The `mixer-*.png`, `platform-*.json` and `meter-frames.json` files are the
 cargo run --locked --release -p moiren-app --features gpui-test,ui-profiler --example ui_capture -- docs/designs/screenshots/application-release
 ```
 
-with `MOIREN_CAPTURE_METERS=1` set (see `crates/moiren-app/src/ui/window/capture.rs`).
+with `MOIREN_CAPTURE_METERS=1` set (see `crates/moiren-app/src/ui/shell/capture.rs`).
 `MOIREN_CAPTURE_SECONDS` bounds the steady-state window (default 3 s). The
 current code writes `platform-{name}.json` and `meter-{name}.json` per layout
 plus a `mixer-{name}.png` capture; `meter-frames.json` is the combined naming

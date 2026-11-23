@@ -69,6 +69,69 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
     Ok(service)
 }
 
+/// The capture's desk. A shot reviews layout and states, not the machine it
+/// was taken on: which endpoints are plugged in, and which desktop
+/// applications hold an audio session at that moment, are live system state
+/// a same-commit recapture cannot reproduce (#150). The rows are a fixed,
+/// plainly generic set, and the capture never opens any of them.
+#[cfg(windows)]
+struct CaptureCatalog;
+
+#[cfg(windows)]
+impl crate::service::CatalogBackend for CaptureCatalog {
+    fn catalog(&self) -> Result<crate::service::DeviceCatalog, crate::service::BackendError> {
+        use crate::service::{DefaultEndpointRow, DeviceCatalog, DeviceRow, ProcessRow};
+        let row = |key: &str, name: &str| DeviceRow {
+            endpoint_id: format!("capture-{key}"),
+            name: name.to_owned(),
+        };
+        let inputs = [
+            row("microphone", "Microphone Array (Built-in Audio)"),
+            row("interface-mic", "Microphone (USB Audio Interface)"),
+            row("interface-line", "Line In (USB Audio Interface)"),
+        ];
+        let outputs = [
+            row("speakers", "Speakers (Built-in Audio)"),
+            row("headphones", "Headphones (USB Audio Interface)"),
+            row("cable", "Virtual Cable Input"),
+            row("monitor", "Monitor (Display Audio)"),
+        ];
+        Ok(DeviceCatalog {
+            default_input_endpoint_id: Some(inputs[0].endpoint_id.clone()),
+            default_output_endpoint_id: Some(outputs[1].endpoint_id.clone()),
+            default_roles: [
+                ("capture", inputs[0].endpoint_id.as_str()),
+                ("render", outputs[1].endpoint_id.as_str()),
+            ]
+            .into_iter()
+            .flat_map(|(flow, default)| {
+                ["console", "multimedia", "communications"].map(|role| DefaultEndpointRow {
+                    flow,
+                    role,
+                    endpoint_id: Some(default.to_owned()),
+                })
+            })
+            .collect(),
+            inputs: inputs.into(),
+            outputs: outputs.into(),
+            asio_drivers: vec![DeviceRow {
+                endpoint_id: "asio:capture-interface".into(),
+                name: "USB Audio Interface ASIO".into(),
+            }],
+            processes: ["player.exe", "browser.exe", "meeting.exe"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| ProcessRow {
+                    pid: 4096 + index as u32 * 4,
+                    creation_time_100ns: 133_000_000_000_000 + index as u64,
+                    name: name.to_owned(),
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+}
+
 /// A plausible program spectrum for the capture on the analyzer's 121-point
 /// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
 /// presence peak.
@@ -290,6 +353,126 @@ async fn status_panels(
     shell.update(cx, |shell, cx| shell.status_close(cx));
 }
 
+/// One settle probe per control-pump tick (`StudioShell::spawn_poll`), so a
+/// service publish, a structural edit's deferred apply or a delayed
+/// animation frame lands between two probes rather than after the last one.
+const PROBE_INTERVAL: Duration = Duration::from_millis(33);
+
+/// How long the window must stay at rest before a shot believes it. That
+/// spans the service's structural-edit debounce and the publish that
+/// carries its outcome, so a shot never catches a graph between the edit
+/// and the fault badges it brings back.
+const REST_WINDOW: Duration = Duration::from_millis(400);
+
+/// How long a capture wait may take — a page shot coming to rest, or the
+/// first catalog landing — before the run is flagged failed. The panel
+/// springs need about a second; anything longer is an animation that never
+/// ends or a service that never answers.
+const WAIT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Whether the platform has applied a resize to `expected`; it rounds the
+/// request to its own device-pixel grid.
+fn fits(actual: Size<Pixels>, expected: Size<Pixels>) -> bool {
+    (f32::from(actual.width) - f32::from(expected.width)).abs() < 0.5
+        && (f32::from(actual.height) - f32::from(expected.height)).abs() < 0.5
+}
+
+/// Brings the capture window to rest — the state it reaches when left
+/// alone — before a page shot, and proves it. Each probe polls the
+/// service, draws a full frame so the panel springs and the timed
+/// animations step, and reads that frame back the way a shot is taken. The
+/// window is at rest once no request is pending, the frame asked for no
+/// further animation frame, the platform has applied `viewport` where one
+/// is expected, and the pixels repeat the previous probe's — kept up for
+/// [`REST_WINDOW`]. A window not at rest by [`WAIT_DEADLINE`] flags the
+/// run, and the shot is still taken so the log and the image show what
+/// went wrong.
+///
+/// This replaces the 100–200 ms sleeps that stood before the page shots,
+/// every one shorter than a panel spring's ~0.9 s (issue #150); the Mixer
+/// page's former 1500 ms yielded the same pixels as the rest wait does. The
+/// status-panel shots keep their fixed waits (`status_panels`): a fade-in
+/// and the performance sampler's two process tables a second apart are
+/// time-based inputs, not motion to drain.
+async fn settle(
+    window: AnyWindowHandle,
+    shell: &Entity<StudioShell>,
+    viewport: Option<Size<Pixels>>,
+    failed: &std::sync::atomic::AtomicBool,
+    cx: &mut AsyncApp,
+) {
+    let started = Instant::now();
+    let mut rest_since: Option<Instant> = None;
+    let mut previous: Option<Vec<u8>> = None;
+    while rest_since.is_none_or(|since| since.elapsed() < REST_WINDOW) {
+        if started.elapsed() >= WAIT_DEADLINE {
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("Capture: the window did not come to rest");
+            return;
+        }
+        cx.background_executor().timer(PROBE_INTERVAL).await;
+        let probe = window.update(cx, |_, window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll())
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+            // The frames this draw asked for; a spring at rest asks for none.
+            let wanted = window.simulate_next_frame(cx);
+            let pending = shell.read(cx).state.read(cx).pending_request;
+            anyhow::Ok((
+                wanted,
+                pending,
+                window.viewport_size(),
+                window.render_to_image()?.into_raw(),
+            ))
+        });
+        let (wanted, pending, size, pixels) = match probe {
+            Ok(Ok(probe)) => probe,
+            Ok(Err(error)) | Err(error) => {
+                failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("Capture: {error:#}");
+                return;
+            }
+        };
+        let at_rest = viewport.is_none_or(|expected| fits(size, expected))
+            && wanted == 0
+            && !pending
+            && previous.as_ref() == Some(&pixels);
+        previous = Some(pixels);
+        rest_since = match (at_rest, rest_since) {
+            (true, since) => Some(since.unwrap_or_else(Instant::now)),
+            (false, _) => None,
+        };
+    }
+}
+
+/// The first catalog lands from a worker job, and every Devices shot and the
+/// Diagnostics counts read it: wait for it rather than a fixed second.
+#[cfg(windows)]
+async fn await_catalog(
+    shell: &Entity<StudioShell>,
+    failed: &std::sync::atomic::AtomicBool,
+    cx: &mut AsyncApp,
+) {
+    let deadline = Instant::now() + WAIT_DEADLINE;
+    loop {
+        let arrived = shell.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            !shell.state.read(cx).snapshot.catalog.outputs.is_empty()
+        });
+        if arrived {
+            return;
+        }
+        if Instant::now() >= deadline {
+            failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("Capture: the device catalog never arrived");
+            return;
+        }
+        cx.background_executor().timer(PROBE_INTERVAL).await;
+    }
+}
+
 pub fn run_ui_capture() -> anyhow::Result<()> {
     let directory = std::env::args()
         .nth(1)
@@ -301,12 +484,16 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
     if meter_capture {
         profiler::set_trace_enabled(true);
     }
-    // Capture presentation without starting hardware or changing its format.
+    // Capture presentation without starting hardware or changing its format,
+    // and without the desk: the catalog is the fixture above.
     #[cfg(windows)]
     let service = if meter_capture {
         meter_service()?
     } else {
-        ServiceRuntime::spawn_with_driver(crate::service::ManagedDriver::windows())?
+        ServiceRuntime::spawn_with_driver(
+            crate::service::ManagedDriver::windows()
+                .with_catalog(std::sync::Arc::new(CaptureCatalog)),
+        )?
     };
     #[cfg(not(windows))]
     let service = if meter_capture {
@@ -380,10 +567,11 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     }
                     eprintln!("Capture {}: {result:?}", path.display());
                 };
-                cx.background_executor()
-                    .timer(Duration::from_millis(1200))
-                    .await;
                 if meter_capture {
+                    // Let startup settle before the steady-state cadence is measured.
+                    cx.background_executor()
+                        .timer(Duration::from_millis(1200))
+                        .await;
                     // `MOIREN_CAPTURE_DRAG` traces a live fader gesture instead of
                     // the steady state: `pan` sweeps it with touchpad pixel scrolls,
                     // `inspector` drags with the inspector open on the dragged strip,
@@ -476,15 +664,15 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     cx.update(|cx| cx.quit());
                     return;
                 }
+                // The core driver off Windows publishes no catalog to wait for.
+                #[cfg(windows)]
+                await_catalog(&shell, &capture_failure, cx).await;
                 for (name, width, height) in
                     [("comfortable", 1440., 900.), ("compact", 1024., 720.)]
                 {
-                    let _ = window.update(cx, |_, window, _| {
-                        window.resize(size(px(width), px(height)))
-                    });
-                    cx.background_executor()
-                        .timer(Duration::from_millis(150))
-                        .await;
+                    let viewport = size(px(width), px(height));
+                    let _ = window.update(cx, |_, window, _| window.resize(viewport));
+                    settle(window, &shell, Some(viewport), &capture_failure, cx).await;
                     for page in [Page::Graph, Page::Mixer, Page::Matrix, Page::Devices] {
                         shell.update(cx, |s, cx| {
                             s.chrome.density = if name == "compact" {
@@ -494,13 +682,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             };
                             s.set_page(page, cx);
                         });
-                        cx.background_executor()
-                            .timer(Duration::from_millis(if page == Page::Mixer {
-                                1500
-                            } else {
-                                100
-                            }))
-                            .await;
+                        settle(window, &shell, None, &capture_failure, cx).await;
                         if page == Page::Mixer {
                             shell.update(cx, |shell, cx| {
                                 let state = shell.state.read(cx);
@@ -538,7 +720,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             settings::device_stream_mut(&mut s.settings.editor.device.audio, settings::Direction::Output, &id);
                         }
                     });
-                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    settle(window, &shell, None, &capture_failure, cx).await;
                     capture(cx, directory.join(format!("{name}-device-override.png")));
                     // Each devices tab is its own surface — list composition,
                     // the virtual-device creation panel, the clock overview,
@@ -564,9 +746,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             s.devices.selected_device = None;
                             cx.notify();
                         });
-                        cx.background_executor()
-                            .timer(Duration::from_millis(100))
-                            .await;
+                        settle(window, &shell, None, &capture_failure, cx).await;
                         capture(cx, directory.join(format!("{name}-{tab_name}.png")));
                     }
                     shell.update(cx, |s, cx| {
@@ -589,7 +769,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             s.settings.editor.section = section;
                             cx.notify();
                         });
-                        cx.background_executor().timer(Duration::from_millis(100)).await;
+                        settle(window, &shell, None, &capture_failure, cx).await;
                         capture(cx, directory.join(format!("{name}-{suffix}.png")));
                     }
                 }
@@ -643,9 +823,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         };
                         cx.notify();
                     });
-                    cx.background_executor()
-                        .timer(Duration::from_millis(120))
-                        .await;
+                    settle(window, &shell, None, &capture_failure, cx).await;
                     capture(cx, directory.join(format!("{name}.png")));
                 }
                 // Card states speak through the outline alone, and the fault
@@ -768,7 +946,8 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .update(cx, |state, _| state.snapshot = std::sync::Arc::new(snapshot));
                     cx.notify();
                 });
-                let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
+                let viewport = size(px(1440.), px(900.));
+                let _ = window.update(cx, |_, window, _| window.resize(viewport));
                 for (name, page) in [
                     ("node-inspector", Page::Graph),
                     ("mixer-inspector", Page::Mixer),
@@ -799,9 +978,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         }
                         cx.notify();
                     });
-                    cx.background_executor()
-                        .timer(Duration::from_millis(120))
-                        .await;
+                    settle(window, &shell, Some(viewport), &capture_failure, cx).await;
                     capture(cx, directory.join(format!("{name}.png")));
                 }
                 shell.update(cx, |shell, cx| {
@@ -812,11 +989,8 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         }))
                     });
                 });
-                cx.background_executor()
-                    .timer(Duration::from_millis(200))
-                    .await;
+                settle(window, &shell, None, &capture_failure, cx).await;
                 shell.update(cx, |shell, cx| {
-                    shell.state.update(cx, |state, _| state.poll());
                     shell.set_page(Page::Graph, cx);
                     shell.chrome.inspector_open = true;
                     shell.chrome.sidebar_open = true;
@@ -836,9 +1010,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     shell.graph_view.camera = Camera::default();
                     cx.notify();
                 });
-                cx.background_executor()
-                    .timer(Duration::from_millis(150))
-                    .await;
+                settle(window, &shell, None, &capture_failure, cx).await;
                 capture(cx, directory.join("compressor-inspector.png"));
                 for kind in [
                     moiren_core::graph::NodeKind::Source,
@@ -852,23 +1024,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             }));
                         });
                     });
-                    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(10))
-                            .await;
-                        let pending = shell.update(cx, |shell, cx| {
-                            shell.state.update(cx, |state, _| state.poll());
-                            shell.state.read(cx).pending_request
-                        });
-                        if !pending {
-                            break;
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                            break;
-                        }
-                    }
+                    settle(window, &shell, None, &capture_failure, cx).await;
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);
@@ -892,9 +1048,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     }
                     cx.notify();
                 });
-                cx.background_executor()
-                    .timer(Duration::from_millis(150))
-                    .await;
+                settle(window, &shell, None, &capture_failure, cx).await;
                 capture(cx, directory.join("node-families.png"));
                 cx.update(|cx| cx.quit());
             })
