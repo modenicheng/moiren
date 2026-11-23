@@ -1825,7 +1825,6 @@ fn graph_box_select_keeps_the_meters_pumping_during_the_drag(cx: &mut gpui_kit::
     // window is interactive.
     view.update(cx, |shell, cx| {
         shell.presentation.visible = false;
-        shell.presentation.minimized = true;
         cx.notify();
     });
     let mut previous = cadence(&view, cx).0;

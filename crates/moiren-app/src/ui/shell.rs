@@ -27,10 +27,15 @@ pub(crate) use pages::graph::graph_canvas::Camera;
 use crate::ui::editors;
 
 /// Presentation survives hiding independently of the service/audio lifetime.
+/// `visible` is the one visibility truth: whether the platform presents the
+/// window (shown and not minimized, gpui's `WindowVisibility`). The
+/// platform's visibility observer writes it on every report and the
+/// control-side poll reconciles it against the platform every tick
+/// ([`StudioShell::reconcile_visibility`]), so it can be stale for at most
+/// one tick.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct WindowPresentation {
     pub visible: bool,
-    pub minimized: bool,
     pub workspace: WorkspaceView,
 }
 
@@ -43,7 +48,6 @@ impl WindowPresentation {
 
     pub fn show(&mut self) {
         self.visible = true;
-        self.minimized = false;
     }
     pub fn hide_to_tray(&mut self) {
         self.visible = false;
@@ -154,9 +158,10 @@ struct PressTracker {
 /// The caller's stake in one [`StudioShell::pump_tick`] notify decision. The
 /// tick always notifies when the drained state or the meter observations
 /// changed; `force` adds an unconditional reason to repaint (the desktop
-/// repaints a window restored from minimized), and `mute` absorbs the notify
-/// entirely (an iconic window must not wake the frame pipeline). The
-/// headless twin passes the default: no extra reason, never muted.
+/// repaints a window restored from minimized, or one whose visibility flag
+/// it just reconciled), and `mute` absorbs the notify entirely (an iconic
+/// window must not wake the frame pipeline). The headless twin passes the
+/// default: no extra reason, never muted.
 #[derive(Default)]
 struct RepaintTerms {
     force: bool,
@@ -552,9 +557,12 @@ impl StudioShell {
             }
         })
         .detach();
+        // The platform's visibility reports are the flag's event-fed writer.
+        // gpui's cache behind them is refreshed only by the reports the
+        // platform delivers, which is why the desktop poll also reconciles
+        // the flag against the platform every tick.
         cx.observe_window_visibility(window, |shell, visibility, _, cx| {
             shell.presentation.visible = visibility.is_visible();
-            shell.presentation.minimized = !visibility.is_visible();
             if !visibility.is_visible() {
                 shell
                     .metering
@@ -657,20 +665,39 @@ impl StudioShell {
         changed
     }
 
-    /// Whether the window may animate right now: visible, presented, settings
-    /// closed, session running, and on a page that mounts meter hot layers.
-    /// Page membership stands in for mounting — the Graph and Mixer pages are
-    /// where meter layers exist — because leftover meter demand on a page
-    /// with no hot layer must not starve the control-side poll.
+    /// Whether the window may animate right now: the platform presents it,
+    /// settings closed, session running, and on a page that mounts meter hot
+    /// layers. Page membership stands in for mounting — the Graph and Mixer
+    /// pages are where meter layers exist — because leftover meter demand on
+    /// a page with no hot layer must not starve the control-side poll.
     fn frames_eligible(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
-            && !self.presentation.minimized
             && matches!(
                 self.presentation.workspace,
                 WorkspaceView::Page(Page::Graph | Page::Mixer)
             )
             && snapshot.phase == SessionPhase::Running
+    }
+
+    /// Reconciles the stored visibility flag with the platform's live state,
+    /// which the desktop poll reads every tick next to the iconic check. The
+    /// visibility observer is the flag's event-fed writer, and it only hears
+    /// what the platform reports: a change the platform never reports leaves
+    /// the flag stale for good — frames stop arming and the poll pumps every
+    /// meter as hidden. The poll keeps running while frames are disarmed, so
+    /// the heal lives there, not in render. Both directions reconcile — a
+    /// flag that says visible over a window the platform is not presenting is
+    /// as wrong as the reverse. The platform state read here is the same pair
+    /// gpui samples (`IsWindowVisible && !IsIconic`), so this heals staleness
+    /// relative to that pair and nothing else: Windows reports a fully
+    /// covered window as visible, and occlusion itself changes nothing here.
+    /// Returns whether the flag changed, so the caller folds one repaint into
+    /// the tick.
+    fn reconcile_visibility(&mut self, visible: bool) -> bool {
+        let changed = self.presentation.visible != visible;
+        self.presentation.visible = visible;
+        changed
     }
 
     /// Whether the window should keep taking display-rate frames: something

@@ -60,21 +60,27 @@ pub(super) fn monitor_geometry_at(
     }
 }
 
+/// The window's Win32 handle: `None` whenever the platform handle cannot be
+/// resolved (headless tests, non-Win32 surfaces). Each caller keeps its own
+/// meaning for that case.
 #[cfg(windows)]
-#[allow(unsafe_code)]
-pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {
+fn hwnd(window: &gpui_kit::Window) -> Option<windows::Win32::Foundation::HWND> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows::Win32::{
-        Foundation::HWND,
-        UI::WindowsAndMessaging::{
-            GetWindowPlacement, IsIconic, SW_SHOWMAXIMIZED, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED,
-        },
-    };
+    use windows::Win32::Foundation::HWND;
     let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::Win32(raw) = handle.as_raw() else {
         return None;
     };
-    let hwnd = HWND(raw.hwnd.get() as *mut _);
+    Some(HWND(raw.hwnd.get() as *mut _))
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, IsIconic, SW_SHOWMAXIMIZED, WINDOWPLACEMENT, WPF_RESTORETOMAXIMIZED,
+    };
+    let hwnd = hwnd(window)?;
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
@@ -96,20 +102,42 @@ pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub(super) fn window_is_iconic(window: &gpui_kit::Window) -> bool {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IsIconic};
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+    use windows::Win32::UI::WindowsAndMessaging::IsIconic;
+    let Some(hwnd) = hwnd(window) else {
         return false;
     };
-    let RawWindowHandle::Win32(raw) = handle.as_raw() else {
-        return false;
-    };
-    unsafe { IsIconic(HWND(raw.hwnd.get() as *mut _)).as_bool() }
+    unsafe { IsIconic(hwnd).as_bool() }
 }
 
 #[cfg(not(windows))]
 pub(super) fn window_is_iconic(_window: &gpui_kit::Window) -> bool {
     false
+}
+
+/// Whether the platform is presenting the window: shown (`WS_VISIBLE`) and
+/// not minimized — the same pair gpui samples into `WindowVisibility`
+/// (`WindowsWindowInner::visibility`, gpui-fast-windows 0.1.7 window.rs).
+/// Read live, because `Window::is_visible` is only that cache, which the
+/// platform refreshes solely through the `WM_SIZE` / `WM_SHOWWINDOW` reports
+/// it delivers (`report_visibility`, events.rs): a change it never reports
+/// leaves the cache stale. Windows has no notification for a fully covered
+/// window, which stays `Visible` here too, so this heals staleness relative
+/// to that pair and nothing else — occlusion does not change it. Surfaces
+/// without a Win32 handle (headless tests, non-Win32 windows) have no live
+/// read and report gpui's cached value instead.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn window_is_visible(window: &gpui_kit::Window) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+    let Some(hwnd) = hwnd(window) else {
+        return window.is_visible();
+    };
+    unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
+}
+
+#[cfg(not(windows))]
+pub(super) fn window_is_visible(window: &gpui_kit::Window) -> bool {
+    window.is_visible()
 }
 
 #[cfg(all(test, windows, feature = "gpui-test"))]
