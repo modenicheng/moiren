@@ -1,7 +1,7 @@
 use super::*;
 use crate::service::{CompressorParameter, CompressorState, GraphEdit, GraphSnapshot};
 use crate::ui::editors::{
-    SliderDispatch, SliderEdit, SliderSlot, commit_closure, sync_slider_range,
+    SliderDispatch, SliderEdit, SliderSlot, commit_closure, fold_minus, sync_slider_range,
 };
 use crate::ui::widgets::fader::SliderBehavior;
 use moiren_core::graph::{NodeId, NodeKind};
@@ -21,6 +21,14 @@ pub(crate) struct CompressorControls {
 /// notch, clamped to the unit position range.
 fn compressor_step(value: f32, notches: f32) -> f32 {
     (value + notches * SLIDER_STEP).clamp(0., 1.)
+}
+
+/// The typed parameter text as the service reads it: minus spellings fold
+/// first ([`fold_minus`], so a zh IME's full-width minus parses in the
+/// threshold's negative dB), and whatever the number parser rejects stays
+/// `NaN`, which the service's parameter validation refuses.
+fn typed_parameter(text: &str) -> f64 {
+    fold_minus(text).parse::<f64>().unwrap_or(f64::NAN)
 }
 
 /// Wheel + double-click behavior for one compressor parameter slider: one
@@ -87,8 +95,7 @@ impl StudioShell {
                                     component::input::InputEvent::PressEnter { .. }
                                         | component::input::InputEvent::Blur
                                 ) {
-                                    let value =
-                                        input.read(cx).value().parse::<f64>().unwrap_or(f64::NAN);
+                                    let value = typed_parameter(&input.read(cx).value());
                                     if shell.state.read(cx).snapshot.graph.node(id).is_some_and(
                                         |node| node.compressor.value(parameter) == value,
                                     ) {
@@ -111,7 +118,7 @@ impl StudioShell {
                         input
                     });
             if !input.read(cx).focus_handle(cx).is_focused(window)
-                && input.read(cx).value().parse::<f64>().ok() != Some(value)
+                && typed_parameter(&input.read(cx).value()) != value
             {
                 input.update(cx, |state, cx| {
                     state.set_value(value.to_string(), window, cx)
@@ -221,5 +228,17 @@ mod tests {
                 "{parameter:?}: reset restored {restored}, expected {default}"
             );
         }
+    }
+
+    #[::core::prelude::v1::test]
+    fn typed_parameter_reads_every_minus_spelling() {
+        // A threshold typed with a zh IME's full-width minus is the same edit
+        // as its half-width spelling; garbage still reads as `NaN`.
+        assert_eq!(typed_parameter("－20"), -20.);
+        assert_eq!(typed_parameter("−20"), -20.);
+        assert_eq!(typed_parameter("-20"), -20.);
+        assert_eq!(typed_parameter("4"), 4.);
+        assert!(typed_parameter("abc").is_nan());
+        assert!(typed_parameter("").is_nan());
     }
 }
