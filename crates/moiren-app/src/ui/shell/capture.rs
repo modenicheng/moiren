@@ -69,6 +69,69 @@ fn meter_service() -> anyhow::Result<ServiceRuntime> {
     Ok(service)
 }
 
+/// The capture's desk. A shot reviews layout and states, not the machine it
+/// was taken on: which endpoints are plugged in, and which desktop
+/// applications hold an audio session at that moment, are live system state
+/// a same-commit recapture cannot reproduce (#150). The rows are a fixed,
+/// plainly generic set, and the capture never opens any of them.
+#[cfg(windows)]
+struct CaptureCatalog;
+
+#[cfg(windows)]
+impl crate::service::CatalogBackend for CaptureCatalog {
+    fn catalog(&self) -> Result<crate::service::DeviceCatalog, crate::service::BackendError> {
+        use crate::service::{DefaultEndpointRow, DeviceCatalog, DeviceRow, ProcessRow};
+        let row = |key: &str, name: &str| DeviceRow {
+            endpoint_id: format!("capture-{key}"),
+            name: name.to_owned(),
+        };
+        let inputs = [
+            row("microphone", "Microphone Array (Built-in Audio)"),
+            row("interface-mic", "Microphone (USB Audio Interface)"),
+            row("interface-line", "Line In (USB Audio Interface)"),
+        ];
+        let outputs = [
+            row("speakers", "Speakers (Built-in Audio)"),
+            row("headphones", "Headphones (USB Audio Interface)"),
+            row("cable", "Virtual Cable Input"),
+            row("monitor", "Monitor (Display Audio)"),
+        ];
+        Ok(DeviceCatalog {
+            default_input_endpoint_id: Some(inputs[0].endpoint_id.clone()),
+            default_output_endpoint_id: Some(outputs[1].endpoint_id.clone()),
+            default_roles: [
+                ("capture", inputs[0].endpoint_id.as_str()),
+                ("render", outputs[1].endpoint_id.as_str()),
+            ]
+            .into_iter()
+            .flat_map(|(flow, default)| {
+                ["console", "multimedia", "communications"].map(|role| DefaultEndpointRow {
+                    flow,
+                    role,
+                    endpoint_id: Some(default.to_owned()),
+                })
+            })
+            .collect(),
+            inputs: inputs.into(),
+            outputs: outputs.into(),
+            asio_drivers: vec![DeviceRow {
+                endpoint_id: "asio:capture-interface".into(),
+                name: "USB Audio Interface ASIO".into(),
+            }],
+            processes: ["player.exe", "browser.exe", "meeting.exe"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| ProcessRow {
+                    pid: 4096 + index as u32 * 4,
+                    creation_time_100ns: 133_000_000_000_000 + index as u64,
+                    name: name.to_owned(),
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+}
+
 /// A plausible program spectrum for the capture on the analyzer's 121-point
 /// grid: a pink-ish slope with a low-end bump, a tone at 1 kHz and a
 /// presence peak.
@@ -418,12 +481,16 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
     if meter_capture {
         profiler::set_trace_enabled(true);
     }
-    // Capture presentation without starting hardware or changing its format.
+    // Capture presentation without starting hardware or changing its format,
+    // and without the desk: the catalog is the fixture above.
     #[cfg(windows)]
     let service = if meter_capture {
         meter_service()?
     } else {
-        ServiceRuntime::spawn_with_driver(crate::service::ManagedDriver::windows())?
+        ServiceRuntime::spawn_with_driver(
+            crate::service::ManagedDriver::windows()
+                .with_catalog(std::sync::Arc::new(CaptureCatalog)),
+        )?
     };
     #[cfg(not(windows))]
     let service = if meter_capture {
