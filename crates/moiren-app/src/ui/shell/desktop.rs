@@ -428,28 +428,49 @@ impl Desktop {
         }
     }
 
-    fn poll(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn poll(&mut self, cx: &mut Context<Self>) {
         // A minimized main window has nothing to repaint: while iconic the
         // poll keeps absorbing snapshot changes silently and skips cx.notify,
         // so an idle-but-running session leaves the frame pipeline unarmed
         // instead of waking the main thread per repaint request. One notify
         // on restore repaints everything absorbed in the meantime. The tray
         // flyout is its own window and keeps its own notify path below.
-        let iconic = self.window.as_ref().is_some_and(|handle| {
-            handle
-                .update(cx, |_, window, _| native::window_is_iconic(window))
-                .unwrap_or(false)
-        });
+        //
+        // Next to it, the platform's live presentation of the main window
+        // (shown and not minimized; `native::window_is_visible`). gpui's
+        // `WindowVisibility` cache — the event-fed writer of the shell's
+        // visibility flag — is refreshed only by the `WM_SIZE` /
+        // `WM_SHOWWINDOW` reports the platform delivers, so a change it
+        // never reports leaves the flag stale. This poll keeps running while
+        // frames are disarmed, so it is the reconciler, as it already is for
+        // the iconic repaint: the flag can be stale for at most one tick.
+        // `None` without a main window (closed to the tray): no shell,
+        // nothing to reconcile, and the reopen starts visible on its own.
+        let (iconic, visible) = self
+            .window
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .update(cx, |_, window, _| {
+                        (
+                            native::window_is_iconic(window),
+                            Some(native::window_is_visible(window)),
+                        )
+                    })
+                    .ok()
+            })
+            .unwrap_or((false, None));
         let restored = self.main_window_minimized && !iconic;
         self.main_window_minimized = iconic;
         // The shared pump tick owns the state drain, project-load finish,
         // autosave, meter pump, and the shell's notify decision.
         let changed = if let Some(shell) = self.shell.clone() {
             let ticked = shell.update(cx, |shell, cx| {
+                let healed = visible.is_some_and(|visible| shell.reconcile_visibility(visible));
                 shell.pump_tick(
                     cx,
                     RepaintTerms {
-                        force: restored,
+                        force: restored || healed,
                         mute: iconic,
                     },
                 )

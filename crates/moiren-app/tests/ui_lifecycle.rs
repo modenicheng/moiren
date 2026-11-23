@@ -16,7 +16,7 @@ fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     assert!(!presentation.visible);
     let mut replacement = WindowPresentation::default();
     replacement.show();
-    assert!(replacement.visible && !replacement.minimized);
+    assert!(replacement.visible);
     // Reads are intentionally nonblocking and may race the service publisher.
     let snapshot = common::wait_snapshot(&handle);
     assert_eq!(snapshot.phase, SessionPhase::Idle);

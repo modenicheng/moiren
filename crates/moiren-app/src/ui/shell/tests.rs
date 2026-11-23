@@ -150,6 +150,318 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
     finish_service(runtime);
 }
 
+/// A desktop-owned main window over the mailbox service, which publishes
+/// nothing unless a test does, so a poll tick's notify decision is the
+/// visibility reconcile's alone. Hide-to-tray only exists with a tray, and a
+/// tray means explicit quit, so closing the window must not quit the app.
+/// The production shell `show_window` builds carries the developer's real
+/// preference and autosave paths; a test must never write them (AS-2/AS-3).
+/// The shell comes back weak so no test is itself what keeps it alive.
+fn desktop_window(
+    cx: &mut gpui_kit::TestAppContext,
+) -> (
+    gpui_kit::Entity<super::desktop::Desktop>,
+    gpui_kit::WeakEntity<StudioShell>,
+    gpui_kit::AnyWindowHandle,
+    crate::service::ServiceMailbox,
+) {
+    cx.update(gpui_kit::init);
+    let (handle, mailbox) = crate::service::ServiceMailbox::new(std::thread::current());
+    let initial = handle.try_snapshot().expect("initial snapshot");
+    let state = cx.new(|_| UiState::new(handle.clone(), initial));
+    let desktop = cx.new(|cx| super::desktop::Desktop::new(state, None, cx));
+    cx.update(|cx| cx.set_quit_mode(gpui_kit::QuitMode::Explicit));
+    cx.update(|cx| {
+        desktop.update(cx, |desktop, cx| {
+            desktop.state_path = None;
+            desktop.saved = crate::project::WindowState::default();
+            desktop.saved.width = 1024.0;
+            desktop.show_window(cx).unwrap();
+        });
+    });
+    let shell = cx.update(|cx| desktop.read(cx).shell.clone().unwrap());
+    shell
+        .update(cx, |shell, _| {
+            shell.preferences.path = None;
+            shell.autosave.path = None;
+        })
+        .unwrap();
+    (desktop, shell, cx.windows()[0], mailbox)
+}
+
+/// One cached-path frame of `window`: the animation callbacks run, then the
+/// notified views re-render and the unnotified cached subtrees replay. Never
+/// `render_frame`, which refreshes the whole window and rebuilds every panel
+/// regardless of the caches.
+fn cached_frame(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::TestAppContext) {
+    cx.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            })
+            .unwrap()
+    })
+}
+
+/// Lets the panel-width springs run out, then burns the one rebuild the
+/// spring-wrapped sidebar hosts take on the first shell notification after a
+/// full build, so the counters below start from the settled cache (the
+/// sidebar cache tests' `settle_spring` / `burn_in`).
+fn settle(
+    shell: &gpui_kit::Entity<StudioShell>,
+    window: gpui_kit::AnyWindowHandle,
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    std::thread::sleep(Duration::from_millis(900));
+    cached_frame(window, cx);
+    shell.update(cx, |_, cx| cx.notify());
+    cached_frame(window, cx);
+}
+
+/// Counts the shell's notifications: the repaint requests a heal must make
+/// and an idle tick must not.
+fn notify_counter(
+    shell: &gpui_kit::Entity<StudioShell>,
+    cx: &mut gpui_kit::TestAppContext,
+) -> std::rc::Rc<std::cell::Cell<usize>> {
+    let count = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = count.clone();
+    cx.update(|cx| {
+        cx.observe(shell, move |_, _| counter.set(counter.get() + 1))
+            .detach();
+    });
+    count
+}
+
+/// The rebuild counts of the graph page controls and the two sidebar panels:
+/// the repaint evidence pairs with them, so a heal must leave them flat.
+#[derive(Debug, PartialEq, Eq)]
+struct Rebuilds {
+    graph_controls: usize,
+    inspector: usize,
+    library: usize,
+}
+
+fn rebuilds(shell: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::TestAppContext) -> Rebuilds {
+    shell.read_with(cx, |shell, cx| Rebuilds {
+        graph_controls: shell.graph_view.controls.read(cx).rebuild_count(),
+        inspector: shell.inspector.panel.read(cx).rebuild_count(),
+        library: shell.library.panel.read(cx).rebuild_count(),
+    })
+}
+
+fn visible(shell: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::TestAppContext) -> bool {
+    shell.read_with(cx, |shell, _| shell.presentation.visible)
+}
+
+fn tick(desktop: &gpui_kit::Entity<super::desktop::Desktop>, cx: &mut gpui_kit::TestAppContext) {
+    desktop.update(cx, |desktop, cx| desktop.poll(cx));
+}
+
+/// The control-side poll is the reconciler between the shell's visibility
+/// flag and the platform (issue #79). The flag's event-fed writer is gpui's
+/// visibility observer, which only hears what the platform reports, and a
+/// change the platform never reports leaves it `false` for good: frames stop
+/// arming and the poll pumps every meter as hidden. The poll keeps running
+/// while frames are disarmed, so one tick must heal the flag — which
+/// re-opens the frame gate — and request exactly one repaint, without
+/// rebuilding the cached panels, while a stale flag alone and a reconciled
+/// tick request nothing.
+#[gpui_kit::test]
+fn poll_heals_a_stale_visibility_flag_and_repaints_once(cx: &mut gpui_kit::TestAppContext) {
+    let (desktop, weak, window, mailbox) = desktop_window(cx);
+    let shell = weak.upgrade().expect("live shell");
+    // A running session, so the frame gate reads the flag alone: the page is
+    // Graph, and every meter rests (no signal behind the snapshot).
+    let running = {
+        let mut snapshot =
+            (*cx.update(|cx| shell.read(cx).state.read(cx).snapshot.clone())).clone();
+        snapshot.phase = crate::service::SessionPhase::Running;
+        snapshot
+    };
+    mailbox.publish(running);
+    settle(&shell, window, cx);
+    // The warm-up tick drains the publish (a notify of its own) and
+    // reconciles the empty subscription tables; from here on an idle tick
+    // requests nothing.
+    tick(&desktop, cx);
+    cached_frame(window, cx);
+    let notified = notify_counter(&shell, cx);
+    let quiet = notified.get();
+    let idle = rebuilds(&shell, cx);
+    tick(&desktop, cx);
+    cached_frame(window, cx);
+    assert_eq!(
+        notified.get(),
+        quiet,
+        "an idle tick must not request a repaint"
+    );
+    assert_eq!(rebuilds(&shell, cx), idle);
+    // A change the platform never reported: it presents the window (the test
+    // platform reports `Visible`), but the observer never ran, so the frame
+    // gate is shut over a presented window.
+    shell.update(cx, |shell, _| shell.presentation.visible = false);
+    assert!(
+        !shell.read_with(cx, |shell, cx| shell.frames_eligible(cx)),
+        "the stale flag must shut the frame gate"
+    );
+    cached_frame(window, cx);
+    assert_eq!(notified.get(), quiet, "a stale flag alone must not repaint");
+    // One tick reconciles the flag with the platform, which re-opens the
+    // gate...
+    tick(&desktop, cx);
+    assert!(visible(&shell, cx), "the poll must heal the stale flag");
+    assert!(
+        shell.read_with(cx, |shell, cx| shell.frames_eligible(cx)),
+        "the healed flag must re-open the frame gate"
+    );
+    // ...and requests exactly one repaint; the cached panels splice instead
+    // of rebuilding.
+    assert_eq!(
+        notified.get(),
+        quiet + 1,
+        "the heal must request exactly one repaint"
+    );
+    cached_frame(window, cx);
+    assert_eq!(
+        rebuilds(&shell, cx),
+        idle,
+        "the heal must not rebuild the cached panels"
+    );
+    // With the flag consistent again, the next tick requests nothing.
+    tick(&desktop, cx);
+    cached_frame(window, cx);
+    assert_eq!(
+        notified.get(),
+        quiet + 1,
+        "a reconciled tick must not request a repaint"
+    );
+    assert_eq!(rebuilds(&shell, cx), idle);
+}
+
+/// The reverse disagreement heals the same way: a flag that says visible
+/// over a window the platform is not presenting (a lost hide report) is
+/// reconciled to `false` on the next tick, owing the one repaint the
+/// observer path makes for that change of state.
+#[gpui_kit::test]
+fn poll_heals_a_stale_visible_flag_over_a_hidden_window(cx: &mut gpui_kit::TestAppContext) {
+    let (desktop, weak, window, _mailbox) = desktop_window(cx);
+    let shell = weak.upgrade().expect("live shell");
+    settle(&shell, window, cx);
+    tick(&desktop, cx);
+    cached_frame(window, cx);
+    let notified = notify_counter(&shell, cx);
+    let quiet = notified.get();
+    let idle = rebuilds(&shell, cx);
+    // The platform hides the window and the observer follows...
+    cx.simulate_window_visibility_change(window, gpui_kit::WindowVisibility::Hidden);
+    assert_eq!(notified.get(), quiet + 1, "the observer's own notify");
+    cached_frame(window, cx);
+    assert!(!visible(&shell, cx));
+    // ...but had that report been lost, the flag would say visible over the
+    // hidden window until the next tick reconciles it...
+    shell.update(cx, |shell, _| shell.presentation.visible = true);
+    tick(&desktop, cx);
+    assert!(
+        !visible(&shell, cx),
+        "the poll must reconcile the flag with the hidden platform state"
+    );
+    // ...owing the one repaint the observer path makes for that change.
+    assert_eq!(
+        notified.get(),
+        quiet + 2,
+        "the reconcile owes the observer path's one repaint"
+    );
+    cached_frame(window, cx);
+    assert_eq!(
+        rebuilds(&shell, cx),
+        idle,
+        "the reconcile must not rebuild the cached panels"
+    );
+    tick(&desktop, cx);
+    cached_frame(window, cx);
+    assert_eq!(
+        notified.get(),
+        quiet + 2,
+        "a reconciled tick must not request a repaint"
+    );
+    assert_eq!(rebuilds(&shell, cx), idle);
+}
+
+/// The reconciler must never show a window the platform is not presenting
+/// (issue #79). A window the platform reports hidden keeps the flag `false`
+/// across ticks; a window hidden to the tray is removed and its shell
+/// released, so the poll has no presentation left to reconcile and must not
+/// resurrect anything; and reopening from the tray builds a fresh shell that
+/// starts visible. The test holds the shell weakly throughout, so it is the
+/// window's removal, not the test, that releases it.
+#[gpui_kit::test]
+fn poll_never_flips_a_window_hidden_to_tray_back_to_visible(cx: &mut gpui_kit::TestAppContext) {
+    let (desktop, weak, window, _mailbox) = desktop_window(cx);
+    let flag = |cx: &mut gpui_kit::TestAppContext| weak.upgrade().map(|shell| visible(&shell, cx));
+    assert_eq!(flag(cx), Some(true), "a fresh window starts visible");
+    // The platform reports the window hidden — what an intentional hide
+    // does on every platform — and the observer follows. Ticks then keep the
+    // flag false: the reconciler only ever writes what the platform says.
+    cx.simulate_window_visibility_change(window, gpui_kit::WindowVisibility::Hidden);
+    cached_frame(window, cx);
+    assert_eq!(flag(cx), Some(false));
+    tick(&desktop, cx);
+    assert_eq!(
+        flag(cx),
+        Some(false),
+        "a tick must not flip a hidden window back to visible"
+    );
+    cx.simulate_window_visibility_change(window, gpui_kit::WindowVisibility::Visible);
+    cached_frame(window, cx);
+    assert_eq!(flag(cx), Some(true));
+    // Hide to the tray: the window is removed and the shell released, so a
+    // tick has nothing left to reconcile or resurrect.
+    cx.update(|cx| {
+        window
+            .update(cx, |_, window, cx| {
+                weak.update(cx, |shell, cx| shell.close_window(window, cx))
+                    .unwrap();
+            })
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert!(cx.windows().is_empty());
+    assert!(
+        cx.update(|cx| desktop.read(cx).shell.clone().is_none()),
+        "the hidden window's shell must be released"
+    );
+    for _ in 0..3 {
+        tick(&desktop, cx);
+        assert!(
+            cx.windows().is_empty(),
+            "a poll tick must not recreate the hidden window"
+        );
+    }
+    assert!(cx.update(|cx| desktop.read(cx).shell.clone().is_none()));
+    // Reopen from the tray: the new shell starts visible and stays so.
+    cx.update(|cx| desktop.update(cx, |desktop, cx| desktop.show_window(cx).unwrap()));
+    let reopened = cx.update(|cx| desktop.read(cx).shell.clone().unwrap());
+    reopened
+        .update(cx, |shell, _| {
+            shell.preferences.path = None;
+            shell.autosave.path = None;
+        })
+        .unwrap();
+    assert_eq!(
+        reopened.upgrade().map(|shell| visible(&shell, cx)),
+        Some(true),
+        "the reopened window must start visible"
+    );
+    tick(&desktop, cx);
+    assert_eq!(
+        reopened.upgrade().map(|shell| visible(&shell, cx)),
+        Some(true),
+        "a presented window must stay visible"
+    );
+}
+
 /// The compact breakpoint adaptation is enter-only (design 21 §2): crossing
 /// below [`theme::COMPACT_BREAKPOINT`] collapses the side panels, but growing
 /// back above it must leave them exactly as the compact session left them.
