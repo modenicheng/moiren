@@ -35,7 +35,14 @@ cargo run --locked -p moiren-app --features gpui-test --example ui_capture
 cargo run --locked -p moiren-app --features component-gallery --example component_preview
 ```
 
-`ui_capture` renders the real shell at 1440×900 and 1024×720 into `docs/designs/screenshots/application/` (or the directory passed as the first argument); attach UI screenshots to PRs. Before each shot the harness waits for the window to come to rest — panel springs and animations settled, no request pending at the service, identical consecutive probe frames — instead of sleeping for a fixed time, so a same-commit recapture is byte-identical while the pointer stays off the capture window (the window is real, and a hover opens the status popups into the shots); a window that never rests fails the run. The device catalog is the harness's fixed fixture (`CaptureCatalog`: generic endpoints, ASIO drivers and applications, none of them opened) rather than the machine's live one, so shots do not track which devices are plugged in or which desktop apps hold an audio session. `--features vad-integration-probe` with `--example vad_integration` exercises the VAD service integration. See [verification.md](../verification.md) for the full gate.
+`ui_capture` renders the real shell at 1440×900 and 1024×720 into `docs/designs/screenshots/application/` (or the directory passed as the first argument); attach UI screenshots to PRs. Its page shots are byte-identical across same-commit recaptures, provided the pointer stays off the capture window (it is a real window, and a hover opens the status popups into the shots):
+
+- Before each page shot the harness waits for the window to come to rest — panel springs and animations settled, no request pending at the service, identical consecutive probe frames — instead of a fixed sleep; a window that is not at rest within 5 s fails the run.
+- The status-panel shots (`MOIREN_CAPTURE_STATUS`) are the exception: they keep fixed waits (250 ms, 1.4 s for the performance panel) because the panel fade-in and the performance sampler's two process tables a second apart are time-based inputs, and their readings are live.
+- The device catalog is the harness's fixed fixture (`CaptureCatalog`: generic endpoints, ASIO drivers and applications, none of them opened) rather than the machine's live one, so shots do not track which devices are plugged in or which desktop apps hold an audio session.
+- The meter-trace run (`MOIREN_CAPTURE_METERS`) is live by design. Its mixer-state shots (`MOIREN_CAPTURE_STATES`) wait only for the service to go idle, since the levels never rest.
+
+`--features vad-integration-probe` with `--example vad_integration` exercises the VAD service integration. See [verification.md](../verification.md) for the full gate.
 
 ## Docs
 

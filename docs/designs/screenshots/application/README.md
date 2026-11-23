@@ -10,13 +10,11 @@ cargo run --locked -p moiren-app --features gpui-test --example ui_capture
 It runs the real shell with the native renderer and writes into this
 directory by default (pass another directory as the first argument to keep a
 run out of the tracked tree); physical pixels scale with the display factor.
-Before every shot the harness waits for the window to come to rest — panel
-springs and animations settled, no request pending at the service, identical
-consecutive probe frames — so a same-commit recapture is byte-identical
-while the pointer stays off the capture window (the window is real: a hover
-opens the status popups into the shots). The device catalog in the shots is
-the harness's fixed fixture (`CaptureCatalog` in the capture source), not the
-capturing machine's devices.
+The page shots here are byte-identical across same-commit recaptures as long
+as the pointer stays off the capture window: each one waits for the window to
+come to rest, and the device catalog is a fixed fixture. The wait, its
+exceptions and the fixture are documented in the
+[crate guide's Verification section](../../../development/crates/moiren-app.md#verification).
 
 The `mixer-*.png`, `platform-*.json` and `meter-frames.json` files are the
 2026-10-28 mixer display-cadence measurements. Regenerate with:
